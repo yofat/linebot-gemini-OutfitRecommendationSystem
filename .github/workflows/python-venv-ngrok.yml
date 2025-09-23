@@ -52,9 +52,12 @@ jobs:
           chmod +x ./ngrok
 
       - name: Auth ngrok (optional)
-        if: ${{ secrets.NGROK_AUTHTOKEN != '' }}
         run: |
-          ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          if [ -n "${{ secrets.NGROK_AUTHTOKEN }}" ]; then
+            ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          else
+            echo "NGROK_AUTHTOKEN not set; skipping ngrok auth"
+          fi
 
       - name: Start ngrok
         run: |
@@ -73,15 +76,21 @@ jobs:
           curl --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[]?.public_url' || true
 
       - name: Auto-update LINE webhook (optional)
-        if: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN != '' && github.event.inputs.auto_update == 'true' }}
+        if: ${{ github.event.inputs.auto_update == 'true' }}
         env:
           LINE_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: |
+          if [ -z "$LINE_TOKEN" ]; then
+            echo "LINE_CHANNEL_ACCESS_TOKEN not set; skipping auto-update"
+            exit 0
+          fi
+
           NGROK_URL=$(curl --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           if [ -z "$NGROK_URL" ] || [ "$NGROK_URL" = "null" ]; then
             echo "Could not find ngrok URL, skipping auto-update"
             exit 0
           fi
+
           PAYLOAD=$(jq -n --arg ep "$NGROK_URL/callback" '{endpoint: $ep}')
           HTTP_STATUS=$(curl -sS -o /tmp/line_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $LINE_TOKEN" \
