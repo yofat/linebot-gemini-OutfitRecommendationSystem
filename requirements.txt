@@ -1,5 +1,5 @@
 Flask==2.3.3
-line-bot-sdk==2.2.0
+line-bot-sdk==2.2.1
 google-generativeai==0.3.0
 pytest==7.4.0
 gunicorn==20.1.0
