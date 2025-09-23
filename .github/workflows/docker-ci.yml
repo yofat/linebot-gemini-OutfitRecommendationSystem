@@ -1,23 +1,2 @@
-name: Docker CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: |
-          docker build -t line-gemini-app:latest .
-
-      - name: Run tests inside container
-        run: |
-          # The image installs dev deps (pytest) as requirements.txt includes pytest
-          docker run --rm line-gemini-app:latest pytest -q
+# REMOVED: docker-ci.yml
+# This workflow has been removed to reduce duplication. Keep python-venv-ngrok.yml as the single workflow.
