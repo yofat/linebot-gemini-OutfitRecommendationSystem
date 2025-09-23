@@ -1,114 +1,23 @@
 name: Python (venv) + ngrok integration
-name: Python (venv) + ngrok integration
+name: Python (venv) minimal test
 
 on:
   workflow_dispatch:
-    inputs:
-      auto_update:
-        description: 'If true, workflow will attempt to auto-update LINE webhook (requires LINE_CHANNEL_ACCESS_TOKEN secret)'
-        required: false
-        default: 'false'
   push:
     branches: [ main ]
 
 jobs:
-  test-and-run-with-ngrok:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Install OS packages
+      - name: Install deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libffi-dev jq wget unzip
-
-      - name: Create venv and install dependencies
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run pytest
         run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt
-
-      - name: Run tests
-        run: |
-          source .venv/bin/activate
           pytest -q
-
-      - name: Start app in background
-        run: |
-          source .venv/bin/activate
-          nohup python -u app.py > app.log 2>&1 &
-          sleep 2
-
-      - name: Download ngrok
-        run: |
-          wget -q -O ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
-          unzip -q ngrok.zip -d ./
-          chmod +x ./ngrok
-
-      - name: Auth ngrok (optional)
-        run: |
-          if [ -n "${{ secrets.NGROK_AUTHTOKEN }}" ]; then
-            ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
-          else
-            echo "NGROK_AUTHTOKEN not set; skipping ngrok auth"
-          fi
-
-      - name: Start ngrok
-        run: |
-          nohup ./ngrok http 5000 --log=stdout > ngrok.log 2>&1 &
-          # wait for ngrok local API
-          for i in {1..15}; do
-            sleep 1
-            if curl --silent http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
-              break
-            fi
-          done
-
-      - name: Print ngrok public URL
-        run: |
-          echo "NGROK tunnels:"
-          curl --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[]?.public_url' || true
-
-      - name: Auto-update LINE webhook (optional)
-        if: ${{ github.event.inputs.auto_update == 'true' }}
-        env:
-          LINE_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: |
-          if [ -z "$LINE_TOKEN" ]; then
-            echo "LINE_CHANNEL_ACCESS_TOKEN not set; skipping auto-update"
-            exit 0
-          fi
-
-          NGROK_URL=$(curl --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          if [ -z "$NGROK_URL" ] || [ "$NGROK_URL" = "null" ]; then
-            echo "Could not find ngrok URL, skipping auto-update"
-            exit 0
-          fi
-
-          PAYLOAD=$(jq -n --arg ep "$NGROK_URL/callback" '{endpoint: $ep}')
-          HTTP_STATUS=$(curl -sS -o /tmp/line_resp.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LINE_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            https://api.line.me/v2/bot/channel/webhook/endpoint || true)
-          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "204" ]; then
-            echo "Successfully updated LINE webhook to: $NGROK_URL/callback"
-          else
-            echo "Failed to update LINE webhook (HTTP $HTTP_STATUS)"
-            echo "Response:"; cat /tmp/line_resp.json || true
-            exit 1
-          fi
-
-      - name: Show app & ngrok logs (tail)
-        run: |
-          echo "--- app.log ---"
-          tail -n +1 app.log | sed -n '1,200p' || true
-          echo "--- ngrok.log ---"
-          tail -n +1 ngrok.log | sed -n '1,200p' || true
