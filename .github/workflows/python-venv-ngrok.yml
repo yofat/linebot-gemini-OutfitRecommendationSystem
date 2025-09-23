@@ -69,6 +69,77 @@ jobs:
               break
             fi
           done
+name: Python (venv) + ngrok integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_update:
+        description: 'If true, workflow will attempt to auto-update LINE webhook (requires LINE_CHANNEL_ACCESS_TOKEN secret)'
+        required: false
+        default: 'false'
+  push:
+    branches: [ main ]
+
+jobs:
+  test-and-run-with-ngrok:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install OS packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libffi-dev jq wget unzip
+
+      - name: Create venv and install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          pytest -q
+
+      - name: Start app in background
+        run: |
+          source .venv/bin/activate
+          nohup python -u app.py > app.log 2>&1 &
+          sleep 2
+
+      - name: Download ngrok
+        run: |
+          wget -q -O ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
+          unzip -q ngrok.zip -d ./
+          chmod +x ./ngrok
+
+      - name: Auth ngrok (optional)
+        run: |
+          if [ -n "${{ secrets.NGROK_AUTHTOKEN }}" ]; then
+            ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          else
+            echo "NGROK_AUTHTOKEN not set; skipping ngrok auth"
+          fi
+
+      - name: Start ngrok
+        run: |
+          nohup ./ngrok http 5000 --log=stdout > ngrok.log 2>&1 &
+          # wait for ngrok local API
+          for i in {1..15}; do
+            sleep 1
+            if curl --silent http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
+              break
+            fi
+          done
 
       - name: Print ngrok public URL
         run: |

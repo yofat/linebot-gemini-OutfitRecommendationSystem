@@ -18,6 +18,26 @@ LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 # logging configuration (env: LOG_LEVEL, LOG_FILE)
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 log_file = os.getenv('LOG_FILE')
+#!/usr/bin/env python3
+import os
+import logging
+import threading
+import time
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+
+from handlers import register_handlers
+from state import cleanup
+
+app = Flask(__name__)
+LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
+
+# logging configuration (env: LOG_LEVEL, LOG_FILE)
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_file = os.getenv('LOG_FILE')
 handlers = []
 if log_file:
     handlers = [logging.FileHandler(log_file), logging.StreamHandler()]
