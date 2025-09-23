@@ -41,28 +41,58 @@ jobs:
             exit 1
           fi
 
-      - name: Install and start ngrok v3
+      - name: Install and start ngrok v3 (robust)
         if: ${{ github.event.inputs.auto_update == 'true' }}
         id: start_ngrok
         run: |
-          # install prerequisites
+          set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y jq curl tar
-          # Try to download a modern ngrok v3 binary. If this URL breaks, update to the official download page.
+
           NGROK_TARBALL_URL="https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-v3-stable-linux-amd64.tgz"
-          set -euo pipefail
+          echo "Downloading ngrok v3 from $NGROK_TARBALL_URL"
           if ! curl -fsSL -o ngrok.tgz "$NGROK_TARBALL_URL"; then
-            echo "Failed to download ngrok v3 from $NGROK_TARBALL_URL" >&2
-            echo "Please update the workflow to point to a valid ngrok v3 release or install ngrok via other means." >&2
+            echo "Failed to download ngrok v3 tarball. Please update the URL in the workflow." >&2
             exit 1
           fi
-          tar -xzf ngrok.tgz
-          chmod +x ./ngrok
-          # configure authtoken securely
-          ./ngrok config add-authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
-          nohup ./ngrok http 5000 --log=stdout > /tmp/ngrok.log 2>&1 &
-          # wait for ngrok to establish tunnel (allowing a bit more time)
-          for i in {1..20}; do
+
+          tar -xzf ngrok.tgz || { echo "Failed to extract ngrok.tgz" >&2; ls -la; exit 1; }
+
+          # find the binary from extraction (support various tar layouts)
+          if [ -x ./ngrok ]; then
+            BIN=./ngrok
+          else
+            BIN=$(find . -maxdepth 3 -type f -name ngrok -perm /u+x | head -n1 || true)
+          fi
+
+          if [ -z "${BIN:-}" ]; then
+            echo "ngrok binary not found after extraction" >&2
+            ls -la
+            exit 1
+          fi
+
+          echo "Using ngrok binary: $BIN"
+          $BIN version || true
+
+          # ensure we use the downloaded binary even if system has ngrok v2
+          sudo mv "$BIN" /usr/local/bin/ngrok
+          sudo chmod +x /usr/local/bin/ngrok
+          BIN=/usr/local/bin/ngrok
+
+          echo "ngrok final version check:" 
+          $BIN version
+
+          # set authtoken: prefer v3 'config add-authtoken', fall back to 'authtoken'
+          if $BIN help | grep -qi "config"; then
+            $BIN config add-authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          else
+            $BIN authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          fi
+
+          nohup $BIN http 5000 --log=stdout > /tmp/ngrok.log 2>&1 &
+
+          # wait for ngrok to establish tunnel (timeout ~30s)
+          for i in {1..30}; do
             sleep 1
             if curl -s http://127.0.0.1:4040/api/tunnels | jq -e '.tunnels[0].public_url' >/dev/null 2>&1; then
               break
