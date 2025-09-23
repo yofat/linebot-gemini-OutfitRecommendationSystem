@@ -1,3 +1,42 @@
+Webhook 測試與故障排查（快速清單）
+
+1) 本地測試（使用 ngrok）
+   - 啟動應用：`docker compose up --build` 或 `python app.py`。
+   - 在本機啟動 ngrok：`ngrok http 5000`。
+   - 在 LINE Developers 的 Webhook URL 填入 `https://xxxx.ngrok.io/callback`（把 xxxx 換成實際子域）。
+   - 確認 webhook 設為 Enable。
+
+2) 使用測試事件（模擬 LINE 發送）
+   - 已加入 `scripts/send_test_webhook.py`，可用來從本地發送帶有正確簽章的測試事件：
+     ```powershell
+     $env:LINE_CHANNEL_SECRET="your_line_channel_secret"
+     python .\scripts\send_test_webhook.py --url https://xxxx.ngrok.io/callback
+     ```
+
+3) 常見問題與排查
+   - 500 或 400 錯誤：檢查 `X-Line-Signature` 是否正確（使用上面的測試腳本可驗證）。
+   - 連線失敗：確認應用已在 5000 埠監聽，並且 ngrok 正在轉發到同一埠。
+   - LINE 無回應：檢查 LINE Console 的 webhook event delivery logs，查看 LINE 端回報的 HTTP 狀態碼與錯誤訊息。
+   - Gemini 回呼/呼叫失敗：如果沒有提供 `GENAI_API_KEY`，應用會回傳提示訊息；請把 key 設在 `.env` 或 GitHub Secrets（生產時務必放在 secrets）。
+
+4) 在 CI（GitHub Actions）使用 ngrok（自動化測試）
+   - 建議只在需要整合測試時短暫啟動 ngrok，並使用 GitHub Secrets 儲存 `NGROK_AUTHTOKEN` 與 `LINE_CHANNEL_ACCESS_TOKEN`。
+   - 我可以幫你新增一個 workflow 範例（會在 job log 顯示 ngrok URL），但請注意安全與成本。
+
+   Auto-update LINE webhook from workflow
+
+   - 如果你希望 workflow 自動把 ngrok URL 設為 LINE webhook endpoint，可以在 repository Secrets 加入 `LINE_CHANNEL_ACCESS_TOKEN`（channel 管理權杖）。
+   - 當 `LINE_CHANNEL_ACCESS_TOKEN` 在 secrets 中存在時，我新增的 workflow (`.github/workflows/ngrok-integration.yml`) 會自動呼叫 LINE 管理 API 把 webhook endpoint 設為 `https://...ngrok.io/callback`。該步驟會在日誌中只顯示成功或失敗狀態，不會回顯 token。
+   - 如果你要手動控制，請不要加入該 secret，workflow 仍會顯示 ngrok URL 但不會變更 LINE 設定。
+
+   如何用 flag 啟用自動更新
+
+   - 在 Actions 頁面按下 `Run workflow` 時，會出現 `auto_update` 的選項，填 `true` 可啟用自動更新（前提是 `LINE_CHANNEL_ACCESS_TOKEN` 已設定在 secrets）。
+   - 也可以用 GitHub CLI 指定輸入：
+      ```powershell
+      gh workflow run ngrok-integration.yml --repo YOUR_OWNER/YOUR_REPO --field auto_update=true
+      ```
+
 LINE + Gemini 穿搭分析（專案說明）
 
 檢查結果（目前 repo 包含）
@@ -35,76 +74,114 @@ LINE + Gemini 穿搭分析（專案說明）
 1. 建立並啟用虛擬環境：
 # LINE + Gemini 穿搭分析（簡潔使用說明）
 
-本專案是一個簡易的 LINE Bot 範例，會把使用者上傳的圖片與先前輸入的文字描述送到 Google Gemini（Generative AI）做分析，並回覆分析結果。
+本專案是一個簡易的 LINE Bot 範例，會把使用者上傳的圖片與先前輸入的文字描述送到 Google Gemini（Generative AI）做分析，並回覆分析結果。專案已模組化（`app.py`、`handlers.py`、`gemini_client.py`、`state.py`、`utils.py`），並包含 CI workflow 用於測試與臨時公開測試（ngrok）。
 
-快速重點
-- 要能運行：需要設定 `GENAI_API_KEY`、`LINE_CHANNEL_ACCESS_TOKEN`、`LINE_CHANNEL_SECRET` 三個環境變數。
-- 主程式：`app.py`（Flask webhook）；主要功能拆在 `handlers.py`、`gemini_client.py`、`state.py`、`utils.py`。
+前置需求
+------------
+- Python 3.11+
+- 建議在虛擬環境中執行
+- 需要的相依請見 `requirements.txt`
 
-如何在本機快速跑起來（PowerShell 範例）
+快速開始（本機 - PowerShell）
+--------------------------------
 1. 建立並啟用虛擬環境：
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
+
 2. 安裝相依：
+
 ```powershell
+python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
-3. 設定必要環境變數（直接設定或放在 `.env` 並使用 tools 載入）：
+
+3. 設定必要環境變數（示例）：
+
 ```powershell
 $env:GENAI_API_KEY="your_genai_api_key"
 $env:LINE_CHANNEL_ACCESS_TOKEN="your_line_channel_access_token"
 $env:LINE_CHANNEL_SECRET="your_line_channel_secret"
 ```
+
 4. 啟動應用：
+
 ```powershell
-python .\app.py
+python app.py
+# 或使用 gunicorn：
+# gunicorn -w 4 -b 0.0.0.0:5000 app:app
 ```
-5. （選用）若要讓 LINE 服務能呼叫本機 webhook，可用 `ngrok http 5000` 取得公開 URL，然後把該 URL 設在 LINE Developers 的 Webhook URL。
 
-Docker（快速示例）
+5. （選用）若要讓 LINE 能呼叫本機 webhook，使用 ngrok：
+
 ```powershell
-docker build -t line-gemini-app:latest .
-docker run -e LINE_CHANNEL_ACCESS_TOKEN="..." -e LINE_CHANNEL_SECRET="..." -e GENAI_API_KEY="..." -p 5000:5000 line-gemini-app:latest
+ngrok http 5000
+# 把 ngrok 顯示的 public URL 設為 LINE Developers 的 Webhook URL（例如 https://xxxx.ngrok.io/callback）
 ```
 
-Docker Compose（推薦：一次啟動）
-1. 建立 `.env`（或修改現有 `.env.example`）：
-```
-LINE_CHANNEL_ACCESS_TOKEN=your_token
-LINE_CHANNEL_SECRET=your_secret
-GENAI_API_KEY=your_genai_key
-```
-2. 使用 docker-compose 啟動（會自動讀取 `.env`）：
+測試
+------
+在本機執行：
+
 ```powershell
-docker-compose up --build
+pytest -q
 ```
-3. 停止並移除容器：
+
+必要的環境變數 / GitHub Secrets
+----------------------------------
+這些變數可設在本機 `.env`（測試用途）或在 GitHub repository 的 Settings → Secrets → Actions（生產/CI）：
+
+- `GENAI_API_KEY`：Google Generative AI (Gemini) 的 API Key（若使用實際呼叫）。
+- `LINE_CHANNEL_ACCESS_TOKEN`：LINE channel 的 channel access token（用於回覆訊息與更新 webhook）。
+- `LINE_CHANNEL_SECRET`：LINE channel 的 secret（用於驗證訊息）。
+- `NGROK_AUTHTOKEN`：ngrok authtoken（若要在 GitHub Actions 中啟用 ngrok 並建立公開 URL，必須提供，否則 ngrok 會返回 ERR_NGROK_4018）。
+
+GitHub Actions: `python-venv-ngrok.yml`
+---------------------------------------
+該 workflow 的行為：
+- 建立 Python venv 並安裝依賴
+- 執行 pytest
+- 在 job 中啟動 Flask 應用
+- （可選）下載並啟動 ngrok，取得 public URL
+- （可選）若 `LINE_CHANNEL_ACCESS_TOKEN` 存在且你啟用 `auto_update`，workflow 會呼叫 LINE 管理 API 自動更新 webhook endpoint（指向 `<ngrok_url>/callback`）
+
+觸發 workflow（範例，PowerShell + `gh` CLI）
+
 ```powershell
-docker-compose down
+gh workflow run python-venv-ngrok.yml --repo yofat/linebot-gemini-OutfitRecommendationSystem -f auto_update=true
+gh run list --repo yofat/linebot-gemini-OutfitRecommendationSystem
+gh run view <run-id> --repo yofat/linebot-gemini-OutfitRecommendationSystem --log
 ```
 
-也可以使用 `.
-un.ps1 docker-run`，若 `docker-compose.yml` 在目錄中，腳本會改用 `docker-compose up --build`。
+重要提醒
+---------
+- 若 `NGROK_AUTHTOKEN` 未設或無效，workflow 仍會完成測試與啟動應用，但無法建立 ngrok public URL，且自動更新 webhook 的步驟會被跳過或失敗（日誌會顯示 ERR_NGROK_4018）。
+- GitHub Actions 不允許在 `if:` 表達式中直接引用 secrets（故 workflow 已改為在步驟內檢查環境變數）。
 
-目前缺少或建議補上的項目（最少需求）
-- 測試：專案目前有 minimal 測試，但建議加入更多單元測試（pytest）來覆蓋 `handlers` 與 `gemini_client` 的核心行為。
-- CI：若要在 push 時自動跑測試，請新增 GitHub Actions workflow 並把 `GENAI_API_KEY` 設為 secret（測試應 mock Gemini 呼叫）。
-- 監控/錯誤回報：建議在生產加入 logging 與外部錯誤追蹤（例如 Sentry）。
+故障排查（常見）
+------------------
+- ngrok ERR_NGROK_4018：表示需要在 ngrok 官網註冊並取得 authtoken，然後把 `NGROK_AUTHTOKEN` 放到 repo secrets。
+- 無法更新 LINE webhook：確認 `LINE_CHANNEL_ACCESS_TOKEN` 已正確放在 GitHub Secrets，並且在觸發 workflow 時有開啟 `auto_update`。
+- Webhook 無觸發或驗證失敗：檢查 `X-Line-Signature` 與 `LINE_CHANNEL_SECRET` 是否一致；可用 `scripts/send_test_webhook.py` 在本機模擬測試（需設定 `LINE_CHANNEL_SECRET`）。
 
-簡短故障排查
-- 若 webhook 未觸發：確認 LINE 上 webhook 是否啟用且 URL 正確、以及 Webhook 的憑證（X-Line-Signature）是否能正確驗證。
-- 若 Gemini 呼叫失敗：確認 `GENAI_API_KEY` 是否有效，或在本地先用 mock 客戶端測試。
+替代方案（不在 CI 放 ngrok token）
+-----------------------------------
+- 在本地使用 ngrok 並手動把 public URL 寫入 LINE Developers（安全且簡單）。
+- 使用 Cloudflare Tunnel (`cloudflared`)：需註冊並配置，較適合長期固定暴露的情境。
+- 使用第三方 GitHub Action 提供的 ngrok 方案（仍可能需要 token）。
 
-我已做的改動（專案內）
-- 在 `app.py` 新增 background cleanup thread 與 logging。
-- 新增一個 minimal 的向後相容 shim（`model` 與 `call_gemini_with_retries`），以便舊有測試可正常運行。
+其他資源
+---------
+- `scripts/send_test_webhook.py`：可在本機發送帶有正確簽章的測試 webhook（用來驗證 `X-Line-Signature` 驗證邏輯）。
 
-要我現在幫你做的事（建議選項）
-- 我可以幫你把現有測試數量擴充到覆蓋 `handlers`，並加入 GitHub Actions CI（自動執行 pytest）。
-- 或是只針對本地開發優化 README（例如加入範例訊息、Webhook 驗證教學）。
+下一步建議
+------------
+1. 若要在 CI 自動更新 webhook，請在 GitHub repository Secrets 新增 `NGROK_AUTHTOKEN` 與 `LINE_CHANNEL_ACCESS_TOKEN`。
+2. 若你不想在 CI 放 token，請在本地用 ngrok 測試並手動更新 LINE Webhook URL。
+3. 我可以幫你把 README 裡面再加入更詳細的 ngrok 註冊步驟與截圖說明（若需要）。
 
----------------------------------
-如果你想要我直接去做其中一件（例如新增 CI、增加測試），寫句簡單指示就好（例如："新增 CI" 或 "寫 tests/test_handlers.py"）。
+---
+若要我直接把 GitHub Actions workflow 改成使用其他 tunnel（例如 cloudflared），或要我加入更詳細的 ngrok 設定步驟，回覆我要「改成 cloudflared」或「補充 ngrok 教學」。
 
