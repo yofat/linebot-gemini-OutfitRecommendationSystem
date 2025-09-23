@@ -41,19 +41,28 @@ jobs:
             exit 1
           fi
 
-      - name: Download and start ngrok
+      - name: Install and start ngrok v3
         if: ${{ github.event.inputs.auto_update == 'true' }}
         id: start_ngrok
         run: |
+          # install prerequisites
           sudo apt-get update -y
-          sudo apt-get install -y unzip jq
-          curl -sSLo ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
-          unzip -q ngrok.zip
+          sudo apt-get install -y jq curl tar
+          # Try to download a modern ngrok v3 binary. If this URL breaks, update to the official download page.
+          NGROK_TARBALL_URL="https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-v3-stable-linux-amd64.tgz"
+          set -euo pipefail
+          if ! curl -fsSL -o ngrok.tgz "$NGROK_TARBALL_URL"; then
+            echo "Failed to download ngrok v3 from $NGROK_TARBALL_URL" >&2
+            echo "Please update the workflow to point to a valid ngrok v3 release or install ngrok via other means." >&2
+            exit 1
+          fi
+          tar -xzf ngrok.tgz
           chmod +x ./ngrok
-          ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          # configure authtoken securely
+          ./ngrok config add-authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
           nohup ./ngrok http 5000 --log=stdout > /tmp/ngrok.log 2>&1 &
-          # wait for ngrok to establish tunnel
-          for i in {1..10}; do
+          # wait for ngrok to establish tunnel (allowing a bit more time)
+          for i in {1..20}; do
             sleep 1
             if curl -s http://127.0.0.1:4040/api/tunnels | jq -e '.tunnels[0].public_url' >/dev/null 2>&1; then
               break
