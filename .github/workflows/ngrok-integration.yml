@@ -1,0 +1,93 @@
+name: Ngrok integration (auto-update LINE webhook)
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_update:
+        description: 'If true, start ngrok and update LINE webhook endpoint'
+        required: false
+        default: 'false'
+
+jobs:
+  test-and-maybe-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt"
+          fi
+
+      - name: Run pytest
+        run: |
+          pytest -q
+
+      - name: Validate secrets for auto-update
+        if: ${{ github.event.inputs.auto_update == 'true' }}
+        run: |
+          if [ -z "${{ secrets.NGROK_AUTHTOKEN }}" ] || [ -z "${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}" ]; then
+            echo "Missing NGROK_AUTHTOKEN or LINE_CHANNEL_ACCESS_TOKEN. Please set these in repository Secrets. Aborting auto-update." >&2
+            exit 1
+          fi
+
+      - name: Download and start ngrok
+        if: ${{ github.event.inputs.auto_update == 'true' }}
+        id: start_ngrok
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unzip jq
+          curl -sSLo ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
+          unzip -q ngrok.zip
+          chmod +x ./ngrok
+          ./ngrok authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          nohup ./ngrok http 5000 --log=stdout > /tmp/ngrok.log 2>&1 &
+          # wait for ngrok to establish tunnel
+          for i in {1..10}; do
+            sleep 1
+            if curl -s http://127.0.0.1:4040/api/tunnels | jq -e '.tunnels[0].public_url' >/dev/null 2>&1; then
+              break
+            fi
+          done
+
+      - name: Get ngrok public URL
+        if: ${{ github.event.inputs.auto_update == 'true' }}
+        id: get_ngrok
+        run: |
+          NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url // ""')
+          if [ -z "$NGROK_URL" ]; then
+            echo "ERROR: could not obtain ngrok public URL" >&2
+            cat /tmp/ngrok.log || true
+            exit 1
+          fi
+          echo "ngrok_url=$NGROK_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Update LINE webhook endpoint
+        if: ${{ github.event.inputs.auto_update == 'true' }}
+        run: |
+          TARGET_URL="${{ steps.get_ngrok.outputs.ngrok_url }}/callback"
+          echo "Updating LINE webhook endpoint to: $TARGET_URL"
+          # Use LINE Management API to update webhook endpoint. Make sure LINE_CHANNEL_ACCESS_TOKEN is stored in repo Secrets.
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "https://api.line.me/v2/bot/channel/webhook/endpoint" \
+            -H "Authorization: Bearer ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"endpoint\": \"$TARGET_URL\"}")
+          # split body and status
+          STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
+          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          echo "LINE API response status: $STATUS"
+          echo "$BODY" | jq '.' || echo "$BODY"
+          if [ "$STATUS" -ge 400 ]; then
+            echo "Failed to update LINE webhook (status $STATUS)" >&2
+            exit 1
+          fi
