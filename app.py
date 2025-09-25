@@ -6,30 +6,10 @@ import time
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 from handlers import register_handlers
 from state import cleanup
-
-app = Flask(__name__)
-LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
-
-# logging configuration (env: LOG_LEVEL, LOG_FILE)
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-log_file = os.getenv('LOG_FILE')
-#!/usr/bin/env python3
-import os
-import logging
-import threading
-import time
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
-
-from handlers import register_handlers
-from state import cleanup
+from sentry_init import init_sentry
 
 app = Flask(__name__)
 LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
@@ -46,20 +26,19 @@ else:
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO), format='%(asctime)s %(levelname)s %(message)s', handlers=handlers)
 logger = logging.getLogger(__name__)
 
-# optional Sentry integration
+# Sentry initialization (if configured)
 try:
-    from sentry_init import init_sentry
     if init_sentry():
         logger.info('Sentry initialized')
 except Exception:
-    # sentry is optional; if import fails, continue silently
-    pass
+    logger.exception('failed to init sentry')
 
 line_bot_api = LineBotApi(LINE_TOKEN) if LINE_TOKEN else None
 handler = WebhookHandler(LINE_SECRET) if LINE_SECRET else None
 
 if line_bot_api and handler:
     register_handlers(line_bot_api, handler)
+
 
 def _start_cleanup(interval: int = 300):
     def _job():
@@ -69,12 +48,15 @@ def _start_cleanup(interval: int = 300):
             except Exception:
                 logger.exception('cleanup failed')
             time.sleep(interval)
+
     t = threading.Thread(target=_job, daemon=True)
     t.start()
+
 
 @app.route('/healthz', methods=['GET'])
 def healthz():
     return 'ok', 200
+
 
 @app.route('/callback', methods=['POST'])
 def callback():
@@ -87,6 +69,7 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return 'OK', 200
+
 
 if __name__ == '__main__':
     _start_cleanup()
