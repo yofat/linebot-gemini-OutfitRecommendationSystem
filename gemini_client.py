@@ -141,6 +141,11 @@ def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: Op
     if timeout is None:
         timeout = _get_timeout()
 
+    # Allow disabling image analysis via env for environments without image API support
+    if os.getenv('DISABLE_IMAGE_ANALYZE', '').lower() in ('1', 'true', 'yes'):
+        logger.info('Image analysis disabled via DISABLE_IMAGE_ANALYZE')
+        raise GeminiAPIError('Image analysis disabled')
+
     def _extract_text_from_image_resp(resp: Any) -> str:
         out = getattr(resp, 'output', None)
         if out is None and isinstance(resp, dict):
@@ -160,10 +165,31 @@ def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: Op
             text = first_c.get('text')
         return text if text is not None else str(resp)
 
-    def _call():
-        # The exact SDK call may differ; attempt to call ImageGeneration.create
-        resp = genai.ImageGeneration.create(model='gemini-image-beta', input=[{'mime_type': 'image/jpeg', 'data': image_bytes}, prompt])
-        return _extract_text_from_image_resp(resp)
+    # Determine the available SDK entrypoint for image generation/analysis.
+    # Prefer genai.ImageGeneration.create, otherwise try common older shapes.
+    if hasattr(genai, 'ImageGeneration'):
+        def _call():
+            resp = genai.ImageGeneration.create(model='gemini-image-beta', input=[{'mime_type': 'image/jpeg', 'data': image_bytes}, prompt])
+            return _extract_text_from_image_resp(resp)
+    elif hasattr(genai, 'images') and hasattr(genai.images, 'generate'):
+        # Some versions expose an images.generate API
+        def _call():
+            # attempt a reasonable call shape for images.generate
+            try:
+                resp = genai.images.generate(model='gemini-image-beta', image=[{'mime_type': 'image/jpeg', 'data': image_bytes}], prompt=prompt)
+            except TypeError:
+                # fallback: try positional args
+                resp = genai.images.generate([{'mime_type': 'image/jpeg', 'data': image_bytes}], prompt)
+            return _extract_text_from_image_resp(resp)
+    else:
+        # Clear, actionable error instead of ambiguous AttributeError + retries
+        msg = (
+            "google.generativeai does not expose ImageGeneration/images.generate in this environment. "
+            "Please upgrade the google-generativeai package to a version that supports image APIs, or set "
+            "DISABLE_IMAGE_ANALYZE=1 to skip image analysis."
+        )
+        logger.error(msg)
+        raise GeminiAPIError(msg)
 
     try:
         return _call_with_retries(_call, retries=retries, timeout=timeout)
