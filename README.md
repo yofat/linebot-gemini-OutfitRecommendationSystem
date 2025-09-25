@@ -1,3 +1,19 @@
+## 專案狀態（2025-09-25）
+
+- 測試狀態：所有單元測試已通過（12 passed, 0 failed）。
+- 主要修正：
+   - `gemini_client.py` 改為在呼叫時延遲讀取與 configure API key（lazy configure），避免在 import 時依賴環境變數導致測試/mock 時序問題。
+   - 回傳解析更健壯：同時支援物件屬性存取與 dict-like 回傳（可處理測試用的假回傳以及 SDK 真實回傳格式）。
+   - 修正測試檔 `tests/test_gemini_client_retry.py` 中殘留的 markdown fence，並修正相關測試以確保收集與執行正常。
+- 如何再次執行測試（本機 / CI）：
+
+```powershell
+python -m pytest -q
+```
+
+短期建議：修正 `state.py` 的 timezone deprecation（使用 timezone-aware datetime），並補充更多針對 Gemini 各種回傳型態的單元測試。
+
+Webhook 測試與故障排查（快速清單）
 Webhook 測試與故障排查（快速清單）
 
 1) 本地測試（使用 ngrok）
