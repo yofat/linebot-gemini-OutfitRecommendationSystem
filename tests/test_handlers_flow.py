@@ -84,7 +84,8 @@ def test_text_then_image_flow(monkeypatch):
     # simulate text event
     text_event = DummyEvent('u1', DummyTextMessage('參加面試'))
     handler.invoke_all(text_event)
-    assert api.replies and '請上傳圖片' in api.replies[-1][1]
+    # new state-machine asks for location/scene first
+    assert api.replies and '請描述地點或場景' in api.replies[-1][1]
 
     # simulate image event
     img_event = DummyEvent('u1', DummyImageMessage('m1'))
