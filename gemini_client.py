@@ -271,12 +271,13 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             types_mod = getattr(genai, 'types', None)
             if types_mod is not None and hasattr(types_mod, 'Content') and hasattr(types_mod, 'Part'):
                 try:
+                    # Build a single Content with both a text Part and an inline_data Part
                     prompt_str = prompt + '\n' + context_text
-                    content_objs = [
-                        types_mod.Content(parts=[types_mod.Part(text=prompt_str, role='user')]),
-                        types_mod.Content(parts=[types_mod.Part(inline_data=types_mod.InlineData(mime_type=mime, data=image_bytes))])
-                    ]
-                    candidates.append(content_objs)
+                    content_obj = types_mod.Content(parts=[
+                        types_mod.Part(text=prompt_str, role='user'),
+                        types_mod.Part(inline_data=types_mod.InlineData(mime_type=mime, data=image_bytes))
+                    ])
+                    candidates.append([content_obj])
                 except Exception:
                     # typed construction failed for this SDK version; fall back to dicts
                     pass
@@ -317,14 +318,24 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         # Variant B: wrap text as content field (some SDKs expect content list)
         try:
             alt2 = []
+            # Build a single content dict with both text and image parts when possible
+            text_part = None
+            image_part = None
             for p in parts:
                 if isinstance(p, dict) and 'text' in p:
-                    # ensure the Part dict uses 'text' only (no role)
-                    alt2.append({'content': [{'type': 'text', 'text': p.get('text')}]} )
+                    text_part = {'type': 'text', 'text': p.get('text')}
                 elif isinstance(p, dict) and 'data' in p:
-                    # prefer inline_data shape for image parts
-                    alt2.append({'content': [{'inline_data': {'mime_type': p.get('mime_type'), 'data': p.get('data')}}]})
-                else:
+                    image_part = {'inline_data': {'mime_type': p.get('mime_type'), 'data': p.get('data')}}
+            content_parts = []
+            if text_part is not None:
+                content_parts.append(text_part)
+            if image_part is not None:
+                content_parts.append(image_part)
+            if content_parts:
+                alt2.append({'content': content_parts})
+            else:
+                # fallback to original mapping if we couldn't assemble parts
+                for p in parts:
                     alt2.append(p)
             candidates.append(alt2)
         except Exception:
