@@ -265,6 +265,23 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         order until one succeeds.
         """
         candidates = []
+        # If the SDK exposes typed helpers, prefer constructing typed Content/Part
+        # objects first (these will validate roles/fields correctly for that SDK).
+        try:
+            types_mod = getattr(genai, 'types', None)
+            if types_mod is not None and hasattr(types_mod, 'Content') and hasattr(types_mod, 'Part'):
+                try:
+                    prompt_str = prompt + '\n' + context_text
+                    content_objs = [
+                        types_mod.Content(parts=[types_mod.Part(text=prompt_str, role='user')]),
+                        types_mod.Content(parts=[types_mod.Part(inline_data=types_mod.InlineData(mime_type=mime, data=image_bytes))])
+                    ]
+                    candidates.append(content_objs)
+                except Exception:
+                    # typed construction failed for this SDK version; fall back to dicts
+                    pass
+        except Exception:
+            pass
         # Newer SDK shape: Content with 'parts' where each Part has either 'text' or 'inline_data'
         try:
             # Some newer SDK variants expect a Content with 'parts' where each
