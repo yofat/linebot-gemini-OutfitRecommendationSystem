@@ -11,6 +11,14 @@ except Exception:
 
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 try:
+    from linebot.models import PostbackEvent, FollowEvent
+except Exception:
+    try:
+        from linebot.models.events import PostbackEvent, FollowEvent  # type: ignore
+    except Exception:
+        PostbackEvent = None  # type: ignore
+        FollowEvent = None  # type: ignore
+try:
     from linebot.models import FlexSendMessage
 except Exception:
     # minimal shim for environments without the SDK's FlexSendMessage
@@ -22,9 +30,33 @@ from linebot import LineBotApi
 from gemini_client import text_generate, image_analyze, GeminiTimeoutError, GeminiAPIError
 from state import set_state, get_state, clear_state
 from utils import truncate, split_message, safe_log_event
+from utils import validate_image
 from prompts import SYSTEM_RULES, USER_CONTEXT_TEMPLATE, TASK_INSTRUCTION
 from security.pi_guard import sanitize_user_text, scan_prompt_injection
 from security.messages import SAFE_REFUSAL
+from sentry_init import set_user as sentry_set_user, set_tag as sentry_set_tag, capture_exception as sentry_capture_exception, set_extra as sentry_set_extra
+from templates.flex_outfit import build_flex_payload
+try:
+    from linebot.models import QuickReply, QuickReplyButton, MessageAction, PostbackAction
+except Exception:
+    # Provide minimal shims so module can be imported in test environments without full SDK
+    class QuickReply:
+        def __init__(self, items=None):
+            self.items = items or []
+
+    class QuickReplyButton:
+        def __init__(self, action=None):
+            self.action = action
+
+    class MessageAction:
+        def __init__(self, label: str = '', text: str = ''):
+            self.label = label
+            self.text = text
+
+    class PostbackAction:
+        def __init__(self, label: str = '', data: str = ''):
+            self.label = label
+            self.data = data
 
 try:
     import sentry_sdk
@@ -133,14 +165,18 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             logger.info('duplicate text event skipped: %s', event_id)
             return
         user_id = event.source.user_id
+        # set obfuscated user id for Sentry
+        try:
+            sentry_set_user({"id": _hash_user(user_id)})
+        except Exception:
+            pass
         raw_text = (getattr(event.message, 'text', '') or '')
         text = sanitize_user_text(raw_text)
         pi = scan_prompt_injection(text)
         if pi.get('detected'):
             # tag and respond with safe refusal
-            if sentry_sdk:
-                sentry_sdk.set_tag('pi_detected', 'true')
-                sentry_sdk.set_extra('pi_reason', pi.get('reason'))
+            sentry_set_tag('pi_detected', 'true')
+            sentry_set_extra('pi_reason', pi.get('reason'))
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=SAFE_REFUSAL))
             return
         safe_log_event(logger, 'received_text', user_id=user_id, event_type='text')
@@ -150,30 +186,64 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
         # state machine: Q1 -> Q2 -> Q3 -> WAIT_IMAGE
         if not phase:
-            # start Q1
-            set_state(user_id, phase='Q1')
+            # start Q1 (keep legacy 'phase' for compatibility, also set new 'stage' and 'context')
+            set_state(user_id, phase='Q1', stage='ASK_CONTEXT', context={'scene': None, 'purpose': None, 'time_weather': None})
+            # ask for scene/location as before
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請描述地點或場景（例如：上班、聚會、海邊）'))
             return
         if phase == 'Q1':
             if not text:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請輸入地點或場景'))
                 return
-            set_state(user_id, location=text, phase='Q2')
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請描述穿搭目的（例如：正式、休閒）'))
+            # store scene and ask purpose (use postback suggestions)
+            st = get_state(user_id) or {}
+            ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
+            ctx['scene'] = text
+            # advance phase
+            set_state(user_id, phase='Q2', stage='ASK_CONTEXT', context=ctx)
+            # offer some postback choices for purpose
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='正式', data='q2=正式')),
+                QuickReplyButton(action=PostbackAction(label='休閒', data='q2=休閒')),
+                QuickReplyButton(action=PostbackAction(label='其他', data='q2=其他')),
+            ])
+            msg = TextSendMessage(text='請描述穿搭目的（例如：正式、休閒）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
             return
         if phase == 'Q2':
             if not text:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請輸入穿搭目的'))
                 return
-            set_state(user_id, purpose=text, phase='Q3')
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請描述時間或天氣（例如：夏天、傍晚）'))
+            st = get_state(user_id) or {}
+            ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
+            ctx['purpose'] = text
+            set_state(user_id, phase='Q3', stage='ASK_CONTEXT', context=ctx)
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='白天/晴', data='q3=白天/晴')),
+                QuickReplyButton(action=PostbackAction(label='傍晚/涼爽', data='q3=傍晚/涼爽')),
+                QuickReplyButton(action=PostbackAction(label='夜晚/寒冷', data='q3=夜晚/寒冷')),
+            ])
+            msg = TextSendMessage(text='請描述時間或天氣（例如：夏天、傍晚）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
             return
         if phase == 'Q3':
             if not text:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請輸入時間或天氣'))
                 return
-            set_state(user_id, time_weather=text, phase='WAIT_IMAGE')
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='已完成設定，請上傳圖片（JPG/PNG，最大 %d MB）' % MAX_IMAGE_MB))
+            st = get_state(user_id) or {}
+            ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
+            ctx['time_weather'] = text
+            # set final phase and stage and expiry
+            set_state(user_id, phase='WAIT_IMAGE', stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
             return
         if phase == 'WAIT_IMAGE':
             # allow user to restart flow by sending 'restart'
@@ -191,9 +261,15 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             logger.info('duplicate image event skipped: %s', event_id)
             return
         user_id = event.source.user_id
+        # set obfuscated user id for Sentry and tag
+        try:
+            sentry_set_user({"id": _hash_user(user_id)})
+        except Exception:
+            pass
+        sentry_set_tag('event_type', 'image')
         safe_log_event(logger, 'received_image', user_id=user_id, event_type='image')
         st = get_state(user_id)
-        if not st or st.get('phase') != 'WAIT_IMAGE':
+        if not st or st.get('stage') != 'WAIT_IMAGE' and st.get('phase') != 'WAIT_IMAGE':
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請先完成問答流程（地點/目的/時間），再上傳圖片'))
             return
 
@@ -202,20 +278,20 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             data = b''.join(content) if hasattr(content, '__iter__') else content
         except Exception as e:
             logger.exception('failed to download image')
-            if sentry_sdk:
-                sentry_sdk.capture_exception(e)
+            sentry_capture_exception(e)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='下載圖片失敗'))
             return
 
         size = len(data) if data else 0
+        sentry_set_tag('image_size_bytes', size)
         safe_log_event(logger, 'image_meta', user_id=user_id, event_type='image', image_size=size)
-
         mime = _detect_image_mime(data)
-        if not mime:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='不支援的圖片格式，請上傳 JPG 或 PNG'))
-            return
-        if not data or size > MAX_IMAGE:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'圖片過大或為空（限制 {MAX_IMAGE_MB}MB）'))
+        ok, reason = validate_image(mime, size, max_mb=MAX_IMAGE_MB)
+        if not ok:
+            if reason == 'format':
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='目前僅支援 JPG/PNG，請轉檔後重傳 🙏'))
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'檔案太大了，請壓到 {MAX_IMAGE_MB}MB 以內（JPG/PNG）再傳一次喔～'))
             return
 
         prompt = _build_prompt_from_state(st)
@@ -223,34 +299,29 @@ def register_handlers(line_bot_api: LineBotApi, handler):
         try:
             resp_text = image_analyze(data, prompt)
             latency = int((time.time() - start) * 1000)
+            sentry_set_tag('latency_ms', latency)
         except GeminiTimeoutError as e:
             logger.exception('gemini timeout')
-            if sentry_sdk:
-                sentry_sdk.set_tag('user_hash', _hash_user(user_id))
-                sentry_sdk.set_tag('event_type', 'image')
-                sentry_sdk.set_extra('image_size', size)
-                sentry_sdk.set_extra('latency', None)
-                sentry_sdk.capture_exception(e)
+            sentry_set_tag('user_hash', _hash_user(user_id))
+            sentry_set_extra('image_size', size)
+            sentry_set_extra('latency_ms', None)
+            sentry_capture_exception(e)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='系統忙碌，請稍後再試'))
             return
         except GeminiAPIError as e:
             logger.exception('gemini api error')
-            if sentry_sdk:
-                sentry_sdk.set_tag('user_hash', _hash_user(user_id))
-                sentry_sdk.set_tag('event_type', 'image')
-                sentry_sdk.set_extra('image_size', size)
-                sentry_sdk.set_extra('latency', None)
-                sentry_sdk.capture_exception(e)
+            sentry_set_tag('user_hash', _hash_user(user_id))
+            sentry_set_extra('image_size', size)
+            sentry_set_extra('latency_ms', None)
+            sentry_capture_exception(e)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='分析失敗，請稍後再試'))
             return
         except Exception as e:
             logger.exception('unexpected error during image analyze')
-            if sentry_sdk:
-                sentry_sdk.set_tag('user_hash', _hash_user(user_id))
-                sentry_sdk.set_tag('event_type', 'image')
-                sentry_sdk.set_extra('image_size', size)
-                sentry_sdk.set_extra('latency', None)
-                sentry_sdk.capture_exception(e)
+            sentry_set_tag('user_hash', _hash_user(user_id))
+            sentry_set_extra('image_size', size)
+            sentry_set_extra('latency_ms', None)
+            sentry_capture_exception(e)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='發生錯誤，請稍後再試'))
             return
 
@@ -299,7 +370,8 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
         # build Flex and reply (split long suggestions)
         try:
-            flex = _make_flex_message(overall_int, subs, summary, suggestions)
+            flex_payload = build_flex_payload(overall_int, subs, summary, suggestions)
+            flex = FlexSendMessage(alt_text=f'穿搭評分 {overall_int}', contents=flex_payload)
             line_bot_api.reply_message(event.reply_token, flex)
         except Exception:
             logger.exception('failed to send flex message, fallback to text')
@@ -313,3 +385,70 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                     line_bot_api.push_message(user_id, m)
             except Exception:
                 logger.exception('failed to send fallback messages')
+
+    @handler.add(PostbackEvent)
+    def on_postback(event):
+        # parse postback data like 'q2=正式' or 'q1=餐廳'
+        if not hasattr(event, 'postback') or not getattr(event, 'postback'):
+            return
+        data = getattr(event.postback, 'data', '') or ''
+        user_id = event.source.user_id
+        st = get_state(user_id) or {}
+        ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
+        if data.startswith('q1='):
+            ctx['scene'] = data.split('=', 1)[1]
+            set_state(user_id, stage='ASK_CONTEXT', context=ctx)
+            # ask q2
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='正式', data='q2=正式')),
+                QuickReplyButton(action=PostbackAction(label='休閒', data='q2=休閒')),
+                QuickReplyButton(action=PostbackAction(label='其他', data='q2=其他')),
+            ])
+            msg = TextSendMessage(text='請描述穿搭目的（例如：正式、休閒）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
+            return
+        if data.startswith('q2='):
+            ctx['purpose'] = data.split('=', 1)[1]
+            set_state(user_id, stage='ASK_CONTEXT', context=ctx)
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='白天/晴', data='q3=白天/晴')),
+                QuickReplyButton(action=PostbackAction(label='傍晚/涼爽', data='q3=傍晚/涼爽')),
+                QuickReplyButton(action=PostbackAction(label='夜晚/寒冷', data='q3=夜晚/寒冷')),
+            ])
+            msg = TextSendMessage(text='請描述時間/天氣（例如：夏天、傍晚）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
+            return
+        if data.startswith('q3='):
+            ctx['time_weather'] = data.split('=', 1)[1]
+            set_state(user_id, stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
+            return
+
+    if FollowEvent is not None:
+        @handler.add(FollowEvent)
+        def on_follow(event):
+            # welcome message with quick reply buttons
+            user_id = event.source.user_id
+            try:
+                sentry_set_user({"id": _hash_user(user_id)})
+            except Exception:
+                pass
+            qr = QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label='開始評分', text='開始評分')),
+                QuickReplyButton(action=MessageAction(label='使用說明', text='使用說明')),
+                QuickReplyButton(action=MessageAction(label='隱私說明', text='隱私說明')),
+            ])
+            msg = TextSendMessage(text='歡迎加入穿搭評分 Bot！按下下方按鈕開始吧～')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)

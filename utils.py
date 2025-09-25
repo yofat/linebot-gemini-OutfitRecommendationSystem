@@ -1,5 +1,6 @@
 import logging
-from typing import List
+import os
+from typing import List, Tuple
 
 LINE_MAX = 2000
 
@@ -34,6 +35,24 @@ def split_message(text: str, limit: int = LINE_MAX) -> List[str]:
     if cur:
         parts.append(cur)
     return parts
+
+
+def validate_image(mime: str, size_bytes: int, max_mb: int = None) -> Tuple[bool, str]:
+    """Validate image mime and size. Returns (ok, message).
+
+    Allowed mimes: image/jpeg, image/png
+    """
+    if max_mb is None:
+        try:
+            max_mb = int(os.getenv('MAX_IMAGE_MB', '10'))
+        except Exception:
+            max_mb = 10
+    allowed = ('image/jpeg', 'image/png')
+    if mime not in allowed:
+        return False, 'format'
+    if size_bytes > max_mb * 1024 * 1024:
+        return False, 'size'
+    return True, ''
 
 
 def safe_log_event(logger: logging.Logger, message: str, **kwargs) -> None:

@@ -146,10 +146,3 @@ pytest -q
 - 貢獻：歡迎提交 PR 或 issue；若要擴充 PI 規則、調整 prompt 或更換 LLM，請同時新增對應測試與說明。
 
 ---
-
-我可以為你做的事：
-
-- 幫你建立一個簡短的 PR 描述並執行 git commit + push README.md；或
-- 把 README 以繁體中文網頁 README（README_zh-TW.md）形式另存一份。
-
-已更新 README.md。

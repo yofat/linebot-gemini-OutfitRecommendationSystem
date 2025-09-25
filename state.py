@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import threading
 from typing import Dict, Any, Optional
+import json
 
 try:
     import redis
@@ -31,7 +32,9 @@ class MemoryState(StateBackend):
     def set_state(self, user_id: str, **kwargs: Any) -> None:
         with self._lock:
             s = self._states.get(user_id, {})
+            # merge provided keys into existing state
             s.update(kwargs)
+            # ensure timestamp for expiry checks
             s['ts'] = datetime.now(timezone.utc)
             self._states[user_id] = s
 
