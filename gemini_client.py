@@ -509,10 +509,56 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                             # otherwise raise to go to fallback
                             raise ValueError('invalid schema')
                         except Exception:
+                            # try a simple heuristic: extract the first {...} substring
+                            try:
+                                import re, json as _json
+                                m = re.search(r"(\{.*\})", text, flags=re.S)
+                                if m:
+                                    cand = m.group(1)
+                                    parsed = _json.loads(cand)
+                                    if isinstance(parsed, dict) and 'overall_score' in parsed:
+                                        return parsed
+                            except Exception:
+                                pass
                             # fallthrough to fallback below
                             pass
-        # If no supported API or parse failed, raise
-        raise GeminiAPIError('Failed to obtain valid JSON from generative model')
+        # If no supported API or parse failed, prefer to return a graceful
+        # fallback rather than raising, but log details to aid debugging.
+        logger.warning('Failed to obtain valid JSON from generative model; returning fallback JSON')
+        try:
+            # Attempt to capture resp/text summary for debugging
+            resp_text = None
+            try:
+                if 'resp' in locals() and resp is not None:
+                    # safe access: try to get content-like text fields without printing binaries
+                    out = getattr(resp, 'output', None) or (resp if isinstance(resp, dict) and 'output' in resp else None)
+                    if out and len(out) > 0:
+                        first = out[0]
+                        content = getattr(first, 'content', None) or (first.get('content') if isinstance(first, dict) else None)
+                        if content and len(content) > 0:
+                            first_c = content[0]
+                            text = getattr(first_c, 'text', None) or (first_c.get('text') if isinstance(first_c, dict) else None)
+                            if text:
+                                resp_text = str(text)[:1000]
+            except Exception:
+                resp_text = None
+            # also record candidate summary if available
+            try:
+                if 'candidate' in locals():
+                    def _summ(c):
+                        if isinstance(c, dict):
+                            return {'keys': sorted(list(c.keys()))}
+                        if isinstance(c, list):
+                            return [ _summ(i) for i in c ]
+                        return str(type(c))
+                    logger.warning('Last candidate summary: %s', _summ(candidate))
+            except Exception:
+                pass
+            if resp_text:
+                logger.warning('Response text snippet: %s', resp_text)
+        except Exception:
+            pass
+        return _fallback_outfit_json('Failed to obtain valid JSON from generative model')
     except GeminiAPIError:
         raise
     except Exception as e:
