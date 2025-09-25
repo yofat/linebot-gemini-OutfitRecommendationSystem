@@ -71,6 +71,24 @@ def callback():
     return 'OK', 200
 
 
+# --- Debug endpoints (safe: do NOT return secrets) ---
+@app.route('/_debug/handler_status', methods=['GET'])
+def _debug_handler_status():
+    # Return whether handler and line_bot_api are initialized (boolean only)
+    return {
+        'handler_initialized': bool(handler),
+        'line_bot_api_initialized': bool(line_bot_api)
+    }, 200
+
+
+@app.route('/_debug/env_presence', methods=['GET'])
+def _debug_env_presence():
+    # Check presence (not values) of important env vars used by the app
+    keys = ['LINE_CHANNEL_SECRET', 'LINE_CHANNEL_ACCESS_TOKEN', 'GENAI_API_KEY', 'SENTRY_DSN', 'REDIS_URL']
+    result = {k: (os.getenv(k) is not None) for k in keys}
+    return result, 200
+
+
 if __name__ == '__main__':
     _start_cleanup()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
