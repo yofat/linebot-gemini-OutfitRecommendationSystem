@@ -383,7 +383,8 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             # aggressive sanitized candidate (strip 'type' keys) as higher priority when unknown-field errors occur
             sanitized = _strip_type_keys(parts)
             if sanitized not in tried_candidates:
-                tried_candidates.append(sanitized)
+                # put sanitized candidate first so SDK/KeyError from 'type' keys is avoided early
+                tried_candidates.insert(0, sanitized)
 
             for candidate in tried_candidates:
                 try:
@@ -398,6 +399,12 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                 except Exception as e:
                     # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
                     msg = str(e)
+                    # If the SDK reports that the provided dict has unexpected keys
+                    # (e.g. "provided dictionary has the following keys: ['type','text']"),
+                    # treat it as a schema mismatch and try the next candidate.
+                    if 'provided dictionary has the following keys' in msg or 'provided dictionary has the following keys:' in msg or 'following keys' in msg:
+                        last_exc = e
+                        continue
                     # If the SDK reports an invalid role, attempt to sanitize
                     # any 'role' keys in dict/list candidates and retry once.
                     if 'Please use a valid role' in msg or 'valid role' in msg:
