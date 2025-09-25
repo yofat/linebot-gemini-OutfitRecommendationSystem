@@ -12,6 +12,33 @@ from state import cleanup
 from sentry_init import init_sentry
 
 app = Flask(__name__)
+# Render's Secret Files feature writes plaintext files to /etc/secrets/<NAME>.
+# If the deploy used Secret Files instead of environment variables, try to load
+# those file contents into os.environ so the rest of the app (which uses
+# os.getenv) works without changes.
+def _load_secrets_from_files(keys, base_path='/etc/secrets'):
+    for k in keys:
+        if os.getenv(k) is None:
+            p = os.path.join(base_path, k)
+            try:
+                if os.path.exists(p):
+                    with open(p, 'r', encoding='utf-8') as f:
+                        v = f.read().strip()
+                        if v:
+                            os.environ[k] = v
+            except Exception:
+                # best-effort logging; don't fail app startup
+                try:
+                    logging.getLogger(__name__).exception('failed loading secret file %s', p)
+                except Exception:
+                    pass
+
+
+# load commonly-used secrets from files if present
+_load_secrets_from_files([
+    'LINE_CHANNEL_ACCESS_TOKEN', 'LINE_CHANNEL_SECRET', 'GENAI_API_KEY', 'SENTRY_DSN', 'REDIS_URL'
+])
+
 LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 
