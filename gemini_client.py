@@ -267,11 +267,13 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         candidates = []
         # Newer SDK shape: Content with 'parts' where each Part has either 'text' or 'inline_data'
         try:
-            # Some SDK variants expect a Part with a text/message including a role
-            # Ensure 'text' is a plain string and 'role' is a sibling key on the Part
+            # Some newer SDK variants expect a Content with 'parts' where each
+            # Part is either {'text': '<...>'} or {'inline_data': {...}}.
+            # Avoid adding a 'role' sibling on the same dict as 'text' which
+            # some versions treat as an unknown key list ['text','role'].
             prompt_str = prompt + '\n' + context_text
             content_shape = [
-                {'parts': [{'text': prompt_str, 'role': 'user'}]},
+                {'parts': [{'text': prompt_str}]},
                 {'parts': [{'inline_data': {'mime_type': mime, 'data': image_bytes}}]}
             ]
             candidates.append(content_shape)
@@ -300,9 +302,11 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             alt2 = []
             for p in parts:
                 if isinstance(p, dict) and 'text' in p:
-                    alt2.append({'content': [{'type': 'text', 'text': p.get('text')}]})
+                    # ensure the Part dict uses 'text' only (no role)
+                    alt2.append({'content': [{'type': 'text', 'text': p.get('text')}]} )
                 elif isinstance(p, dict) and 'data' in p:
-                    alt2.append({'image': {'mime_type': p.get('mime_type'), 'data': p.get('data')}})
+                    # prefer inline_data shape for image parts
+                    alt2.append({'content': [{'inline_data': {'mime_type': p.get('mime_type'), 'data': p.get('data')}}]})
                 else:
                     alt2.append(p)
             candidates.append(alt2)
