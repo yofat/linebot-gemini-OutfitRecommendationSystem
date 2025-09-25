@@ -423,13 +423,23 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
     except GeminiAPIError:
         raise
     except Exception as e:
-        # If the SDK/proto rejects certain Part fields (e.g. 'type'), prefer
-        # to return a graceful fallback rather than raising and causing a 500
-        # in the webhook handler. Log full exception for debugging.
+        # If the SDK/proto rejects certain Part fields (e.g. 'type') or the
+        # underlying protobuf types differ (e.g. ProtoType missing DESCRIPTOR),
+        # prefer to return a graceful fallback rather than raising and causing
+        # a 500 in the webhook handler. Log full exception for debugging.
         msg = str(e)
         logger.exception('Unexpected error during analyze_outfit_image')
-        if 'Unknown field' in msg or 'Unknown field for Part' in msg:
-            logger.warning('Detected SDK Part schema mismatch; returning fallback JSON')
+        # treat a few known error-patterns as SDK/proto mismatches and return
+        # a friendly fallback that keeps the bot responsive
+        mismatch_indicators = (
+            'Unknown field',
+            'Unknown field for Part',
+            'Invalid Part',
+            'DESCRIPTOR',  # occurs when a ProtoType object is missing DESCRIPTOR
+            "'ProtoType' object has no attribute 'DESCRIPTOR'",
+        )
+        if any(ind in msg for ind in mismatch_indicators):
+            logger.warning('Detected SDK/Proto schema mismatch; returning fallback JSON: %s', msg)
             return _fallback_outfit_json(f'Image analysis not supported in this deployment: {msg}')
         raise GeminiAPIError(str(e))
 
