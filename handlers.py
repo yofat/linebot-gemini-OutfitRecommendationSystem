@@ -116,6 +116,72 @@ def _detect_image_mime(data: bytes) -> Optional[str]:
     return None
 
 
+def _read_message_content_to_bytes(content) -> Optional[bytes]:
+    """Normalize various return types from LineBotApi.get_message_content to bytes.
+
+    Handles:
+    - bytes/bytearray
+    - iterable of bytes chunks
+    - objects with .content (requests.Response-like)
+    - objects with .read() (file-like)
+    - objects with .iter_content(chunk_size) (requests.Response-like)
+    - SDK Content objects that are iterable
+    Returns bytes or None on failure.
+    """
+    try:
+        # bytes or bytearray
+        if isinstance(content, (bytes, bytearray)):
+            return bytes(content)
+
+        # iterable of bytes chunks
+        if hasattr(content, '__iter__') and not isinstance(content, (str, dict, bytes, bytearray)):
+            try:
+                parts = []
+                for part in content:
+                    if isinstance(part, (bytes, bytearray)):
+                        parts.append(bytes(part))
+                    elif isinstance(part, str):
+                        parts.append(part.encode('utf-8'))
+                    else:
+                        # skip unknown types
+                        continue
+                if parts:
+                    return b''.join(parts)
+            except TypeError:
+                # not actually iterable
+                pass
+
+        # requests.Response-like with .content
+        if hasattr(content, 'content'):
+            c = getattr(content, 'content')
+            if isinstance(c, (bytes, bytearray)):
+                return bytes(c)
+
+        # requests.Response-like with iter_content
+        if hasattr(content, 'iter_content'):
+            try:
+                parts = [bytes(chunk) for chunk in content.iter_content(1024) if chunk]
+                if parts:
+                    return b''.join(parts)
+            except Exception:
+                pass
+
+        # file-like with read()
+        if hasattr(content, 'read'):
+            try:
+                data = content.read()
+                if isinstance(data, (bytes, bytearray)):
+                    return bytes(data)
+                if isinstance(data, str):
+                    return data.encode('utf-8')
+            except Exception:
+                pass
+
+    except Exception:
+        return None
+    return None
+
+
 def _build_prompt_from_state(st: Dict[str, str]) -> str:
     # instruct model to return strict JSON matching schema
     instruct = (
@@ -275,14 +341,15 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
         try:
             content = line_bot_api.get_message_content(event.message.id)
-            data = b''.join(content) if hasattr(content, '__iter__') else content
+            data = _read_message_content_to_bytes(content)
         except Exception as e:
             logger.exception('failed to download image')
             sentry_capture_exception(e)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='下載圖片失敗'))
             return
 
-        size = len(data) if data else 0
+        # ensure size only measured for bytes-like
+        size = len(data) if isinstance(data, (bytes, bytearray)) else 0
         sentry_set_tag('image_size_bytes', size)
         safe_log_event(logger, 'image_meta', user_id=user_id, event_type='image', image_size=size)
         mime = _detect_image_mime(data)
