@@ -116,6 +116,30 @@ def _debug_env_presence():
     return result, 200
 
 
+@app.route('/_debug/genai_caps', methods=['GET'])
+def _debug_genai_caps():
+    """Return information about the installed google.generativeai module and available APIs.
+
+    Useful to verify whether GenerativeModel or Image APIs are present in the deployed environment.
+    """
+    try:
+        import importlib
+        genai = importlib.import_module('google.generativeai')
+        ver = getattr(genai, '__version__', None) or getattr(genai, 'VERSION', None)
+        images_attr = hasattr(genai, 'images') and hasattr(getattr(genai, 'images'), 'generate')
+        caps = {
+            'module_loaded': True,
+            'version': ver,
+            'has_configure': hasattr(genai, 'configure'),
+            'has_GenerativeModel': hasattr(genai, 'GenerativeModel'),
+            'has_ImageGeneration': hasattr(genai, 'ImageGeneration'),
+            'has_images_generate': bool(images_attr)
+        }
+    except Exception as e:
+        caps = {'module_loaded': False, 'error': str(e)}
+    return caps, 200
+
+
 if __name__ == '__main__':
     _start_cleanup()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
