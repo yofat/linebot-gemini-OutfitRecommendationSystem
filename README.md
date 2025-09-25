@@ -13,6 +13,8 @@ python -m pytest -q
 
 短期建議：修正 `state.py` 的 timezone deprecation（使用 timezone-aware datetime），並補充更多針對 Gemini 各種回傳型態的單元測試。
 
+已合併變更：PR #1 已合併至 `main`（commit 2a4da38）。CI 已執行並通過（14 passed）。PR 連結：https://github.com/yofat/linebot-gemini-OutfitRecommendationSystem/pull/1
+
 Webhook 測試與故障排查（快速清單）
 Webhook 測試與故障排查（快速清單）
 
