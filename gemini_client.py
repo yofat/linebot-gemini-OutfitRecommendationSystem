@@ -388,6 +388,34 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
 
             for candidate in tried_candidates:
                 try:
+                    # Log a safe summary of the candidate to help diagnose schema errors
+                    def _candidate_summary(cand):
+                        try:
+                            import copy
+                            def _summ(o):
+                                if isinstance(o, dict):
+                                    keys = sorted(list(o.keys()))
+                                    # hide large binary fields
+                                    if 'data' in o and isinstance(o.get('data'), (bytes, bytearray)):
+                                        return { 'keys': keys, 'data': '<bytes>' }
+                                    # show nested summaries for small dicts
+                                    summary = { 'keys': keys }
+                                    return summary
+                                if isinstance(o, list):
+                                    return [_summ(i) for i in o]
+                                # for other objects show the class name
+                                return type(o).__name__
+                            return _summ(cand)
+                        except Exception:
+                            try:
+                                return str(type(cand))
+                            except Exception:
+                                return '<unknown>'
+
+                    try:
+                        logger.debug('Attempting model.generate_content with candidate summary: %s', _candidate_summary(candidate))
+                    except Exception:
+                        pass
                     # generate_content may accept parts and request_options
                     resp = model.generate_content(candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
                     last_exc = None
