@@ -16,6 +16,13 @@ def _get_api_key() -> Optional[str]:
     return os.getenv('GENAI_API_KEY')
 
 
+def _get_timeout() -> float:
+    try:
+        return float(os.getenv('GEMINI_TIMEOUT_SECONDS', '15'))
+    except Exception:
+        return 15.0
+
+
 def _ensure_configured():
     """Configure genai SDK lazily if possible."""
     key = _get_api_key()
@@ -46,34 +53,47 @@ def _retry_backoff(attempt: int, base: float = 0.5, cap: float = 10.0) -> float:
 
 
 def _call_with_retries(func, *args, retries: int = 3, timeout: float = 10.0, **kwargs):
+    """Call func with retries, exponential backoff + jitter, and per-call timeout.
+
+    If the underlying call times out, raise GeminiTimeoutError. Other failures
+    after retries raise GeminiAPIError.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
     last_exc: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
-            # If genai SDK supports timeout, pass it; else rely on our wrapper
-            return func(*args, **kwargs)
+            # run the potentially blocking func in a thread and enforce timeout
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(func, *args, **kwargs)
+                return fut.result(timeout=timeout)
+        except FutureTimeout as e:
+            last_exc = e
+            logger.warning('Gemini call timeout on attempt %d: %s', attempt, e)
+            if attempt == retries:
+                raise GeminiTimeoutError(str(e)) from e
         except Exception as e:
             last_exc = e
             logger.warning('Gemini call failed on attempt %d: %s', attempt, e)
-            # Classify some common cases
             msg = str(e).lower()
-            if 'timeout' in msg or isinstance(e, TimeoutError):
-                if attempt == retries:
-                    raise GeminiTimeoutError(str(e)) from e
-            if 'quota' in msg or 'quota' in getattr(e, 'message', '').lower():
+            # hard quota/type checks
+            if 'quota' in msg or 'rate limit' in msg:
                 raise GeminiAPIError(str(e)) from e
-            if attempt < retries:
-                wait = _retry_backoff(attempt)
-                time.sleep(wait)
-                continue
-            break
+        # backoff between attempts if not last
+        if attempt < retries:
+            wait = _retry_backoff(attempt)
+            time.sleep(wait)
+            continue
     raise GeminiAPIError(str(last_exc)) from last_exc
 
 
-def text_generate(prompt: str, retries: int = 3, timeout: float = 10.0) -> str:
+def text_generate(prompt: str, retries: int = 3, timeout: Optional[float] = None) -> str:
     if not _get_api_key() or not genai:
         return '未設定 GENAI_API_KEY'
 
     _ensure_configured()
+    if timeout is None:
+        timeout = _get_timeout()
 
     def _extract_text_from_resp(resp: Any) -> str:
         # Support both object-like and dict-like responses
@@ -113,11 +133,13 @@ def text_generate(prompt: str, retries: int = 3, timeout: float = 10.0) -> str:
         raise GeminiAPIError('Unexpected error')
 
 
-def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: float = 20.0) -> str:
+def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: Optional[float] = None) -> str:
     if not _get_api_key() or not genai:
         return '未設定 GENAI_API_KEY'
 
     _ensure_configured()
+    if timeout is None:
+        timeout = _get_timeout()
 
     def _extract_text_from_image_resp(resp: Any) -> str:
         out = getattr(resp, 'output', None)
