@@ -67,71 +67,89 @@
 設計原則
 
 - 減少副作用：只有在確定 API 呼叫與狀態更新需要時才變更外部狀態。
-- 最小權限原則：Prompt 以系統/任務/user 三層分離，避免把信任邏輯放在使用者輸入中。
-- 安全先行：在送出給 LLM 前對 user-provided content 做 PI 檢查並在必要時拒絕或淨化。
+# 穿搭評分 LINE Bot（Gemini 驅動）
 
+一個以 Flask + LINE webhook 為基礎的示範專案，展示如何把使用者文字描述與上傳圖片送到 Google Generative AI（Gemini）進行穿搭評分。專案強調安全（Prompt Injection 偵測）、可測試性、Sentry 錯誤追蹤與可切換的狀態儲存（Memory / Redis）。
 
-4. prompt 說明
+## 1. 專案概述
 
-Prompt 三層
+此專案示範完整的 LINE Bot 後端：接收事件（文字、圖片、Postback）、維護簡單狀態機（Q1/Q2/Q3 -> WAIT_IMAGE）、在呼叫 LLM 前執行 Prompt Injection 偵測與淨化，並使用 Gemini 的文字/影像能力產生結構化結果後回覆使用者。適合作為學習與參考範例，也能延伸為商用系統的基礎。
 
-- System (SYSTEM_RULES)：定義 agent 的身份、不可逾越的限制（安全、隱私、拒絕違規要求的標準措辭）以及回覆格式指引（例如要回 JSON 或特定欄位）。
-- Task (TASK_INSTRUCTION)：具體任務說明，例如「你是一個協助使用者上傳圖片並標記標籤的助理，必須回覆簡短句子與狀態代碼」。
-- User Context (USER_CONTEXT_TEMPLATE)：把使用者當前狀態、先前對話摘要、上傳圖像的 metadata 放在此層，並限制長度與格式。
+## 2. 主要功能
 
-範例結構（概念）
+- 三題引導（地點/目的/時間）以 Postback/Quick Reply 驅動，最後請使用者上傳圖片進行評分。
+- 圖片驗證：檔案格式（JPG/PNG）與大小限制（預設 10MB，可透過環境變數調整）。
+- Prompt Injection（PI）防護：在把使用者內容加入 prompt 前執行偵測與淨化，必要時直接回覆安全拒絕訊息而不呼叫 LLM。
+- Sentry 整合：錯誤與高風險事件會上報 Sentry，並加上匿名化使用者標記與關鍵 tag/extra。
+- State 抽象：支援 MemoryState（本機）與 RedisState（生產），方便測試與水平擴充。
+- Gemini client：封裝呼叫到 Google Generative API（包含 timeout、重試與錯誤處理）。
+- Flex Message：分析結果會嘗試以 Flex 格式回覆，若失敗則退回純文字分段回覆。
 
-- 最終送到 Gemini 的 prompt 會以 JSON 或 dict 模式封裝：
-   - system: <SYSTEM_RULES>
-   - task: <TASK_INSTRUCTION>
-   - user: <USER_CONTEXT>
+## 3. 快速啟動 & 環境變數
 
-- 實作細節：
-   - `prompts.py` 中儲存 TEXT 模板與格式化 helper。
-   - 在 `handlers.py` 中，先把使用者文字送到 `security/pi_guard.scan_prompt_injection`。若回傳有高風險，會記錄 Sentry 並以 `SAFE_REFUSAL` 回覆使用者而不呼叫 Gemini。
+建議使用 Python 3.11+。
 
-回覆與解析
+在 PowerShell（Windows）中快速啟動：
 
-- 若預期 Gemini 回傳結構化資料，會在 system/task 中強制要求 JSON 格式。
-- `gemini_client.py` 會嘗試解析回傳，若無法解析則觸發錯誤處理流程（重試或退回簡化 prompt）。
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
+# 開發模式
+set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
+```
 
+主要環境變數（範例）：
 
-5. prompt injection（PI）說明
+- LINE_CHANNEL_SECRET - LINE channel secret
+- LINE_CHANNEL_ACCESS_TOKEN - LINE channel access token
+- GEMINI_API_KEY - Google Gemini API key
+- SENTRY_DSN - Sentry DSN（可選）
+- REDIS_URL - 若要使用 RedisState，設定此變數
+- MAX_IMAGE_MB - 圖片最大允許 MB（預設 10）
 
-偵測與防護策略
+容器化：專案包含 `Dockerfile` 與 `docker-compose.yml`，可在生產環境中使用。
 
-- 位置：在將文字加入 prompt 的 user 層前執行（handlers -> pi_guard -> gemini_client），以避免可惡內容進入 system 或 task 層。
-- 方法：
-   - 快速規則檢查（黑白名單/關鍵字/可疑結構）。
-   - 簡單語意檢查（例如內含 "ignore previous instructions", "do X instead" 的句式）以判斷是否為 prompt injection。
-   - 必要時執行淨化（sanitize）與長度限制（truncate），或直接返回 `SAFE_REFUSAL`。
-- 風險分級：
-   - 低風險：只能做輕微淨化／截斷。
-   - 中風險：淨化 + Sentry 標記 + 仍可嘗試呼叫 Gemini（視情況）。
-   - 高風險：拒絕呼叫 LLM，立即回覆 `SAFE_REFUSAL` 並登記事件。
+## 4. 使用流程與範例
 
-實務細節
+1. 使用者加入或輸入「開始評分」後，Bot 啟動三題引導：
+   - Q1：請描述地點/場景（例如：上班、聚會、海邊）
+   - Q2：請描述穿搭目的（例如：正式、休閒）
+   - Q3：請描述時間/天氣（例如：夏天、傍晚）
+2. 完成三題後，使用者上傳 JPG/PNG 圖片。
+3. 後端會驗證圖片，組成 prompt（包含系統規則、任務指示與 user context），呼叫 Gemini 的影像/文字分析 API，期望回傳結構化 JSON（summary、subscores、suggestions 等）。
+4. 若模型回傳結構化結果，Bot 會嘗試以 Flex Message 回覆；若無法解析，則以分段純文字回覆並 push 額外訊息給使用者。
 
-- 程式碼位置：`security/pi_guard.py` 提供 `scan_prompt_injection(text) -> {score, verdict, reasons}` 與 `sanitize_user_text(text) -> str`。
-- 監控：遇到中/高風險事件會用 Sentry 加上標籤（event_id, user_id, verdict）以便追蹤與回溯。
-- 測試：tests 中已包含對幾種注入字串的單元測試，確保偵測器行為穩定。
+快速測試（本地）：
 
+```powershell
+# 1. 啟動 flask
+set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
+# 2. 使用 ngrok 或其他反向代理將 /webhook 暴露給 LINE
+# 3. 在 LINE 官方後台設定 webhook URL 並啟用
+```
 
-6. 其他專案內需要知道的事情
+## 5. Prompt Injection 與安全策略
 
-快速檢查點
+- 在任何把 user 輸入加入到 system/task 層前，先呼叫 `security.pi_guard.scan_prompt_injection` 並使用 `sanitize_user_text` 做必要淨化。
+- 根據偵測結果採取三種處置：淨化、標記監控（Sentry tag），或直接拒絕（回覆 `SAFE_REFUSAL`）。
+- System prompt 強制模型輸出符合 JSON schema（若需要結構化輸出），並限制回覆長度與格式。
+- 所有錯誤或高風險事件都會上報 Sentry，並帶入匿名使用者 id（hash）與相關上下文。
 
-- healthz：有一個 /healthz endpoint（在 `app.py`），用來確認服務存活與基本依賴（例如 Redis）是否可用。
-- Idempotency：事件去重（使用 event_id 快取）以防止 LINE 或網路重試導致重複處理。
-- 錯誤追蹤：Sentry 已整合，會在例外與高風險事件發生時上報更多 context。
-- 測試：使用 pytest，tests/ 內包含主要流程與邊界案例。請以 `pytest -q` 執行所有測試。
-- 開發提示：在本機使用 MemoryState 測試，部署生產請切換 RedisState 並提供 REDIS_URL。
+## 6. 開發、測試與貢獻
 
-聯絡與延伸
+- 測試：使用 pytest，專案已包含多個 unit / integration tests。執行所有測試：
 
-- 若要新增 prompt 規則或調整 PI 偵測閾值，編輯 `prompts.py` 與 `security/pi_guard.py`，並更新 tests 以覆蓋新範例。
+```powershell
+pytest -q
+```
 
-- 若要將 Gemini 換成其他 LLM，實作另一個 client（類似 `gemini_client.py` 的 interface）並在 handler 中替換呼叫點。
+- 風格與相依性：請依 `requirements.txt` 安裝相依套件。
+- 貢獻：歡迎提交 PR 或 issue；若要擴充 PI 規則、調整 prompt 或更換 LLM，請同時新增對應測試與說明。
 
+---
 
-完成狀態：本 README 旨在直觀呈現使用方式、結構、目的、prompt 與安全設計要點，方便開發者快速上手與審查。
+我可以為你做的事：
+
+- 幫你建立一個簡短的 PR 描述並執行 git commit + push README.md；或
+- 把 README 以繁體中文網頁 README（README_zh-TW.md）形式另存一份。
+
+已更新 README.md。
