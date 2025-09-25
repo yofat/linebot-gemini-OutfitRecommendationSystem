@@ -1,27 +1,6 @@
-## 專案狀態（2025-09-25）
-
-- 測試狀態：所有單元測試已通過（12 passed, 0 failed）。
-- 主要修正：
-   - `gemini_client.py` 改為在呼叫時延遲讀取與 configure API key（lazy configure），避免在 import 時依賴環境變數導致測試/mock 時序問題。
-   - 回傳解析更健壯：同時支援物件屬性存取與 dict-like 回傳（可處理測試用的假回傳以及 SDK 真實回傳格式）。
-   - 修正測試檔 `tests/test_gemini_client_retry.py` 中殘留的 markdown fence，並修正相關測試以確保收集與執行正常。
-# LINE + Gemini Outfit Recommendation Bot
-
-簡短說明
-
-這個專案是一個簡易的 LINE Bot 範例，示範如何把使用者的文字描述與上傳的圖片送到 Google Generative AI (Gemini) 做分析，並回覆結果。程式採用 Flask 作為 webhook server，並包含一組可測試的 Gemini wrapper、簡易狀態暫存，以及單元測試。
-
-## 重點目錄
-
-- `app.py` - Flask 應用與 webhook endpoint。
-- `handlers.py` - 處理 LINE 事件（文字/圖片），包含 idempotency 與錯誤分類。
-- `gemini_client.py` - 封裝 Google Gemini 呼叫（文字與圖片），包含重試與回傳解析的容錯。
-- `state.py` - 可切換的 state backend（Memory / Redis），使用 timezone-aware timestamps。
-- `utils.py` - 小工具（例如訊息截斷、安全記錄）。
-- `tests/` - pytest 測試套件，包含模擬回傳格式的測試。
-- `scripts/` - 開發與測試輔助腳本（例如 `send_test_webhook.py`）。
-
 ## 快速開始（本機 - PowerShell）
+
+這個專案是一個 LINE Bot 範例，示範如何把使用者的文字描述與上傳的圖片送到 Google Generative AI (Gemini) 做穿搭分析，並回覆結果。以下為快速開始步驟（把使用說明放在最前面，方便開發與部署）：
 
 1. 建立並啟用虛擬環境：
 
@@ -37,12 +16,17 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-3. 設定環境變數（測試用）：
+3. 設定必需的環境變數（示例）：
 
 ```powershell
 $env:GENAI_API_KEY="your_genai_api_key"
 $env:LINE_CHANNEL_ACCESS_TOKEN="your_line_channel_access_token"
 $env:LINE_CHANNEL_SECRET="your_line_channel_secret"
+# Optional (observability / redis)
+$env:SENTRY_DSN="https://example@sentry.io/123"
+$env:REDIS_URL="redis://localhost:6379/0"
+$env:GEMINI_TIMEOUT_SECONDS="15"
+$env:MAX_IMAGE_MB="10"
 ```
 
 4. 啟動應用：
@@ -53,33 +37,48 @@ python app.py
 # gunicorn -w 4 -b 0.0.0.0:5000 app:app
 ```
 
-5. 本機測試 webhook（選用）
+5. 健康檢查（healthz）：
 
-- 使用 ngrok 暴露 5000 埠，並把 public URL 設為 LINE Developers 的 Webhook URL（`/callback`）：
+- 請求 `GET /healthz` 應回 'ok'（狀態碼 200），此 endpoint 可用於 Load Balancer 或平台的健康檢查。
 
-```powershell
-ngrok http 5000
-```
-
-- 專案提供 `scripts/send_test_webhook.py` 可在本機模擬 LINE event（需設定 `LINE_CHANNEL_SECRET`）：
-
-```powershell
-$env:LINE_CHANNEL_SECRET="your_line_channel_secret"
-python .\scripts\send_test_webhook.py --url https://xxxx.ngrok.io/callback
-```
-
-## 測試
+6. 測試
 
 ```powershell
 pytest -q
 ```
+
+---
+
+## 專案說明
+
+簡短說明：本專案採用 Flask 作為 webhook server，包含 Gemini wrapper（`gemini_client.py`）、事件處理（`handlers.py`）、狀態管理（`state.py`）、以及 Prompt Injection 防護模組（`prompts.py`, `security/pi_guard.py`, `security/messages.py`）。
+
+## 重點目錄
+
+- `app.py` - Flask 應用與 webhook endpoint。
+- `handlers.py` - 處理 LINE 事件（文字/圖片），包含 idempotency 與錯誤分類。
+- `gemini_client.py` - 封裝 Google Gemini 呼叫（文字與圖片），包含重試與回傳解析的容錯。
+- `state.py` - 可切換的 state backend（Memory / Redis），使用 timezone-aware timestamps。
+- `utils.py` - 小工具（例如訊息截斷、安全記錄）。
+- `tests/` - pytest 測試套件，包含模擬回傳格式的測試。
+- `scripts/` - 開發與測試輔助腳本（例如 `send_test_webhook.py`）。
+
+## 已新增的安全與防護
+
+- Prompt Injection 防護
+   - 新增檔案：`prompts.py`, `security/pi_guard.py`, `security/messages.py`。
+   - 會先 sanitize 使用者輸入、再掃描常見注入字串；偵測到注入會直接使用 `SAFE_REFUSAL` 回覆並在 Sentry 設 `pi_detected=true`（若啟用 Sentry）。
+   - prompt 組成為 `SYSTEM_RULES + TASK_INSTRUCTION + USER_CONTEXT_TEMPLATE (+ 圖片)`，並明確把使用者語境包在 `<<USER_CONTEXT>>...<</USER_CONTEXT>>` 中標示為背景資料而非指令。
 
 ## 環境變數與 Secrets
 
 - `GENAI_API_KEY`：Google Gemini API key（測試/生產）。
 - `LINE_CHANNEL_ACCESS_TOKEN`：LINE channel access token（回覆訊息用）。
 - `LINE_CHANNEL_SECRET`：LINE channel secret（驗證 webhook）。
-- `NGROK_AUTHTOKEN`：CI 若需要建立 ngrok tunnel 才需設定（建議僅在需要時加入）。
+- `SENTRY_DSN`：若設定，應用會嘗試初始化 Sentry，並在例外發生或 PI 偵測時上報。
+- `REDIS_URL`：選填；若設定且 `redis` 套件可用，事件去重（idempotency）會使用 Redis；否則使用 process memory fallback。
+- `GEMINI_TIMEOUT_SECONDS`：呼叫 Gemini 的超時（秒），預設 15。
+- `MAX_IMAGE_MB`：圖片大小限制（MB），預設 10。
 
 ## 部署建議
 
