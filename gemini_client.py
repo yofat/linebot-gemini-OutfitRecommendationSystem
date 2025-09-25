@@ -398,6 +398,43 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                 except Exception as e:
                     # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
                     msg = str(e)
+                    # If the SDK reports an invalid role, attempt to sanitize
+                    # any 'role' keys in dict/list candidates and retry once.
+                    if 'Please use a valid role' in msg or 'valid role' in msg:
+                        try:
+                            def _sanitize_roles(o):
+                                # recursively copy and sanitize any 'role' values
+                                import copy
+                                if isinstance(o, dict):
+                                    new = {}
+                                    for k, v in o.items():
+                                        if k == 'role':
+                                            if v not in ('user', 'model'):
+                                                new[k] = 'user'
+                                            else:
+                                                new[k] = v
+                                        else:
+                                            new[k] = _sanitize_roles(v)
+                                    return new
+                                if isinstance(o, list):
+                                    return [_sanitize_roles(i) for i in o]
+                                return copy.copy(o)
+
+                            # only try sanitizing for dict/list shaped candidates
+                            if isinstance(candidate, (dict, list)):
+                                sanitized_candidate = _sanitize_roles(candidate)
+                                logger.warning('Sanitizing candidate roles and retrying to avoid invalid role error')
+                                try:
+                                    resp = model.generate_content(sanitized_candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+                                    last_exc = None
+                                    break
+                                except Exception as e2:
+                                    # if retry fails, record and continue with other candidates
+                                    last_exc = e2
+                                    continue
+                        except Exception:
+                            # fallback to normal handling below
+                            pass
                     if 'Unknown field for Part' in msg or 'Unknown field' in msg or 'Invalid Part' in msg:
                         # if unknown field, try sanitized candidate next
                         last_exc = e
