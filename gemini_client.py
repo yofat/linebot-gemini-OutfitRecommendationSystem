@@ -9,6 +9,11 @@ try:
 except Exception:
     genai = None
 
+try:
+    from prompts import TASK_INSTRUCTION
+except Exception:
+    TASK_INSTRUCTION = ''
+
 logger = logging.getLogger(__name__)
 
 
@@ -202,3 +207,75 @@ def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: Op
     except Exception:
         logger.exception('Unexpected error in image_analyze')
         raise GeminiAPIError('Unexpected error')
+
+
+def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
+                        image_bytes: bytes, mime: str = 'image/jpeg',
+                        timeout: int = 15) -> dict:
+    """
+    Multimodal image->JSON analyzer using the GenerativeModel content API (Free-tier friendly).
+
+    Returns a dict matching the expected schema. On failure, returns a fallback dict with summary
+    describing the reason.
+    """
+    if not _get_api_key() or not genai:
+        raise GeminiAPIError('未設定 GENAI_API_KEY or genai not available')
+
+    _ensure_configured()
+
+    # Build prompt from provided context
+    prompt = (
+        TASK_INSTRUCTION if 'TASK_INSTRUCTION' in globals() else ''
+    )
+    # minimal context text
+    context_text = f"場景：{scene}\n目的：{purpose}\n時間/天氣：{time_weather}\n"
+    # Compose parts: first instruction/context, then image part
+    parts = [
+        {'type': 'input_text', 'text': prompt + '\n' + context_text},
+        {'mime_type': mime, 'data': image_bytes}
+    ]
+
+    try:
+        # Prefer GenerativeModel API if available
+        if hasattr(genai, 'GenerativeModel'):
+            model = genai.GenerativeModel(name='gemini-1.5-flash')
+            # generate_content may accept parts and request_options
+            resp = model.generate_content(parts, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+            # try to extract JSON string from response
+            # support object-like and dict-like
+            out = getattr(resp, 'output', None) or (resp if isinstance(resp, dict) and 'output' in resp else None)
+            if out and len(out) > 0:
+                first = out[0]
+                # content may hold the json text
+                content = getattr(first, 'content', None) or (first.get('content') if isinstance(first, dict) else None)
+                if content and len(content) > 0:
+                    first_c = content[0]
+                    text = getattr(first_c, 'text', None) or (first_c.get('text') if isinstance(first_c, dict) else None)
+                    if text:
+                        try:
+                            import json as _json
+                            parsed = _json.loads(text)
+                            # Ensure shape
+                            if isinstance(parsed, dict) and 'overall_score' in parsed:
+                                return parsed
+                            # otherwise raise to go to fallback
+                            raise ValueError('invalid schema')
+                        except Exception:
+                            # fallthrough to fallback below
+                            pass
+        # If no supported API or parse failed, raise
+        raise GeminiAPIError('Failed to obtain valid JSON from generative model')
+    except GeminiAPIError:
+        raise
+    except Exception as e:
+        logger.exception('Unexpected error during analyze_outfit_image')
+        raise GeminiAPIError(str(e))
+
+
+def _fallback_outfit_json(reason: str) -> dict:
+    return {
+        'overall_score': 0,
+        'subscores': {'fit': 0, 'color': 0, 'occasion': 0, 'balance': 0, 'shoes_bag': 0, 'grooming': 0},
+        'summary': f'分析失敗: {reason}',
+        'suggestions': ['', '', '']
+    }

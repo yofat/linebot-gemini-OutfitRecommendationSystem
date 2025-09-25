@@ -30,7 +30,7 @@ from linebot import LineBotApi
 from gemini_client import text_generate, image_analyze, GeminiTimeoutError, GeminiAPIError
 from state import set_state, get_state, clear_state
 from utils import truncate, split_message, safe_log_event
-from utils import validate_image
+from utils import validate_image, compress_image_to_jpeg
 from prompts import SYSTEM_RULES, USER_CONTEXT_TEMPLATE, TASK_INSTRUCTION
 from security.pi_guard import sanitize_user_text, scan_prompt_injection
 from security.messages import SAFE_REFUSAL
@@ -114,6 +114,24 @@ def _detect_image_mime(data: bytes) -> Optional[str]:
     if data.startswith(b'\x89PNG\r\n\x1a\n'):
         return 'image/png'
     return None
+
+
+_user_image_timestamps: Dict[str, float] = {}
+
+
+def allow_user_image_infer(user_id: str, cooldown_sec: int = None) -> bool:
+    """Per-user cooldown: return True if allowed, False if still in cooldown."""
+    if cooldown_sec is None:
+        try:
+            cooldown_sec = int(os.getenv('PER_USER_IMAGE_COOLDOWN_SEC', '15'))
+        except Exception:
+            cooldown_sec = 15
+    now = time.time()
+    last = _user_image_timestamps.get(user_id)
+    if last and now - last < cooldown_sec:
+        return False
+    _user_image_timestamps[user_id] = now
+    return True
 
 
 def _read_message_content_to_bytes(content) -> Optional[bytes]:
@@ -352,6 +370,22 @@ def register_handlers(line_bot_api: LineBotApi, handler):
         size = len(data) if isinstance(data, (bytes, bytearray)) else 0
         sentry_set_tag('image_size_bytes', size)
         safe_log_event(logger, 'image_meta', user_id=user_id, event_type='image', image_size=size)
+
+        # 1) DISABLE_IMAGE_ANALYZE quick path
+        if os.getenv('DISABLE_IMAGE_ANALYZE', '').lower() in ('1', 'true', 'yes'):
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='目前僅支援文字描述，請描述上衣/下著/鞋款與顏色、版型（合身/寬鬆）等，我會以文字給分與建議。'))
+            clear_state(user_id)
+            return
+
+        # 2) per-user cooldown
+        if not allow_user_image_infer(user_id):
+            try:
+                cooldown = int(os.getenv('PER_USER_IMAGE_COOLDOWN_SEC', '15'))
+            except Exception:
+                cooldown = 15
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'圖片分析稍後再試，請在 {cooldown} 秒後再試，或改以文字描述。'))
+            return
+
         mime = _detect_image_mime(data)
         ok, reason = validate_image(mime, size, max_mb=MAX_IMAGE_MB)
         if not ok:
@@ -361,10 +395,19 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'檔案太大了，請壓到 {MAX_IMAGE_MB}MB 以內（JPG/PNG）再傳一次喔～'))
             return
 
+        # 3) compress to JPEG to save tokens
+        try:
+            comp_bytes, comp_mime = compress_image_to_jpeg(data)
+        except Exception:
+            logger.exception('compression failed, using original bytes')
+            comp_bytes, comp_mime = data, mime
+
         prompt = _build_prompt_from_state(st)
         start = time.time()
         try:
-            resp_text = image_analyze(data, prompt)
+            # call new multimodal analyzer
+            from gemini_client import analyze_outfit_image
+            parsed = analyze_outfit_image(st.get('context', {}).get('scene', ''), st.get('context', {}).get('purpose', ''), st.get('context', {}).get('time_weather', ''), comp_bytes, mime=comp_mime)
             latency = int((time.time() - start) * 1000)
             sentry_set_tag('latency_ms', latency)
         except GeminiTimeoutError as e:
@@ -373,7 +416,8 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             sentry_set_extra('image_size', size)
             sentry_set_extra('latency_ms', None)
             sentry_capture_exception(e)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='系統忙碌，請稍後再試'))
+            # downgrade to text guidance
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='目前圖片分析較忙碌，請改用文字描述（上衣/下著/鞋款與顏色、版型），我一樣會給分與建議喔！'))
             return
         except GeminiAPIError as e:
             logger.exception('gemini api error')
@@ -381,39 +425,23 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             sentry_set_extra('image_size', size)
             sentry_set_extra('latency_ms', None)
             sentry_capture_exception(e)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='分析失敗，請稍後再試'))
+            # downgrade to text guidance
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='現在圖片分析較忙碌，請改用文字描述（上衣/下著/鞋款與顏色、版型），我會改用文字給分與建議。'))
             return
         except Exception as e:
-            logger.exception('unexpected error during image analyze')
+            logger.exception('unexpected error during multimodal image analyze')
             sentry_set_tag('user_hash', _hash_user(user_id))
             sentry_set_extra('image_size', size)
             sentry_set_extra('latency_ms', None)
             sentry_capture_exception(e)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='發生錯誤，請稍後再試'))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='發生錯誤，請稍後再試或改用文字描述'))
             return
-
-        # try parse JSON schema from model
-        try:
-            parsed = json.loads(resp_text)
-        except Exception:
-            # if model returned plain text, wrap
-            parsed = None
 
         clear_state(user_id)
 
-        if not parsed:
-            # fallback to sending raw text split
-            parts = split_message(resp_text)
-            if not parts:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='分析結果為空'))
-                return
-            messages = [TextSendMessage(text=truncate(p)) for p in parts]
-            try:
-                line_bot_api.reply_message(event.reply_token, messages[:5])
-                for m in messages[5:]:
-                    line_bot_api.push_message(user_id, m)
-            except Exception:
-                logger.exception('failed to send messages')
+        if not parsed or not isinstance(parsed, dict):
+            # parsed should be a dict matching expected schema; if not, inform user and fallback to text guidance
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='分析結果為空或格式不正確，請改以文字描述（上衣/下著/鞋款與顏色、版型）我會用文字給分與建議。'))
             return
 
         # expected schema fields
