@@ -235,12 +235,45 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         {'mime_type': mime, 'data': image_bytes}
     ]
 
+    def _create_generative_model(preferred_model_name: str = 'gemini-1.5-flash'):
+        """Attempt to instantiate a GenerativeModel in a way compatible with
+        multiple google.generativeai SDK versions. Try common constructor
+        signatures and fall back to returning an instance created without
+        keyword args.
+        """
+        GM = getattr(genai, 'GenerativeModel', None)
+        if GM is None:
+            return None
+        # Try common constructor signatures
+        for kwargs in ({'model': preferred_model_name}, {'name': preferred_model_name}, {}):
+            try:
+                return GM(**kwargs) if kwargs else GM()
+            except TypeError:
+                # constructor didn't like kwargs, try next
+                continue
+        # last resort: try no-arg constructor
+        try:
+            return GM()
+        except Exception:
+            return None
+
     try:
         # Prefer GenerativeModel API if available
         if hasattr(genai, 'GenerativeModel'):
-            model = genai.GenerativeModel(name='gemini-1.5-flash')
+            model = _create_generative_model('gemini-1.5-flash')
+            if model is None:
+                raise GeminiAPIError('Unable to instantiate GenerativeModel with this google.generativeai version')
             # generate_content may accept parts and request_options
-            resp = model.generate_content(parts, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+            # Support both positional and keyword styles for different SDKs
+            try:
+                resp = model.generate_content(parts, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+            except TypeError:
+                # Some SDK variants expect different param names/order
+                try:
+                    resp = model.generate_content(parts, request_options={'timeout': timeout})
+                except TypeError:
+                    # Fallback: try single-arg call
+                    resp = model.generate_content(parts)
             # try to extract JSON string from response
             # support object-like and dict-like
             out = getattr(resp, 'output', None) or (resp if isinstance(resp, dict) and 'output' in resp else None)

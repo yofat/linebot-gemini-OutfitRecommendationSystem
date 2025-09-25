@@ -118,6 +118,10 @@ def _detect_image_mime(data: bytes) -> Optional[str]:
 
 _user_image_timestamps: Dict[str, float] = {}
 
+# short debounce for prompts to avoid duplicate replies (seconds)
+_recent_prompt_ts: Dict[str, float] = {}
+
+
 
 def allow_user_image_infer(user_id: str, cooldown_sec: int = None) -> bool:
     """Per-user cooldown: return True if allowed, False if still in cooldown."""
@@ -270,6 +274,13 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
         # state machine: Q1 -> Q2 -> Q3 -> WAIT_IMAGE
         if not phase:
+            # debounce to avoid duplicate prompts from webhook retries or fast re-entrancy
+            now = time.time()
+            last = _recent_prompt_ts.get(user_id)
+            if last and now - last < 5:
+                # already asked recently; skip duplicate
+                return
+            _recent_prompt_ts[user_id] = now
             # start Q1 (keep legacy 'phase' for compatibility, also set new 'stage' and 'context')
             set_state(user_id, phase='Q1', stage='ASK_CONTEXT', context={'scene': None, 'purpose': None, 'time_weather': None})
             # ask for scene/location as before

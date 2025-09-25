@@ -67,24 +67,166 @@
 設計原則
 
 - 減少副作用：只有在確定 API 呼叫與狀態更新需要時才變更外部狀態。
+
 # 穿搭評分 LINE Bot（Gemini 驅動）
 
-一個以 Flask + LINE webhook 為基礎的示範專案，展示如何把使用者文字描述與上傳圖片送到 Google Generative AI（Gemini）進行穿搭評分。專案強調安全（Prompt Injection 偵測）、可測試性、Sentry 錯誤追蹤與可切換的狀態儲存（Memory / Redis）。
+此專案為一個以 Flask + LINE webhook 為基礎的示範後端，展示如何把使用者文字描述與上傳圖片送到 Google Generative AI（Gemini）做穿搭評分，並以 Flex 或文字回覆。
 
-## 1. 專案概述
+本次 README 已補充圖片（多模態）在 Free-tier 下的使用說明、停用開關（DISABLE_IMAGE_ANALYZE）、以及 debug endpoints 與本地/Render 測試步驟。
 
-此專案示範完整的 LINE Bot 後端：接收事件（文字、圖片、Postback）、維護簡單狀態機（Q1/Q2/Q3 -> WAIT_IMAGE）、在呼叫 LLM 前執行 Prompt Injection 偵測與淨化，並使用 Gemini 的文字/影像能力產生結構化結果後回覆使用者。適合作為學習與參考範例，也能延伸為商用系統的基礎。
+重點摘要
+- Python 3.11+
+- 建議新增套件：`Pillow`（圖片壓縮），`google-generativeai`（Gemini SDK）
 
-## 2. 主要功能
+## 快速開始（本機 - PowerShell）
 
-- 三題引導（地點/目的/時間）以 Postback/Quick Reply 驅動，最後請使用者上傳圖片進行評分。
-- 圖片驗證：檔案格式（JPG/PNG）與大小限制（預設 10MB，可透過環境變數調整）。
-- Prompt Injection（PI）防護：在把使用者內容加入 prompt 前執行偵測與淨化，必要時直接回覆安全拒絕訊息（`SAFE_REFUSAL`）。
-- Sentry 整合：錯誤與高風險事件會上報 Sentry，並加上匿名化使用者標記與關鍵 tag/extra。
-- State 抽象：支援 MemoryState（本機）與 RedisState（生產），方便測試與水平擴充。
-- Gemini client：封裝呼叫到 Google Generative API（包含 timeout、重試與錯誤處理）。
-- Flex Message：分析結果會嘗試以 Flex 格式回覆，若失敗則退回純文字分段回覆。
+1. 建立虛擬環境並安裝依賴：
 
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
+```
+
+2. 啟動開發伺服器：
+
+```powershell
+set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
+```
+
+主要環境變數（範例）
+
+- `LINE_CHANNEL_SECRET`
+- `LINE_CHANNEL_ACCESS_TOKEN`
+- `GENAI_API_KEY` 或 `GEMINI_API_KEY`（本專案使用 `GENAI_API_KEY`）
+- `SENTRY_DSN`（可選）
+- `REDIS_URL`（若使用 RedisState）
+- `MAX_IMAGE_MB`（default 10）
+- `IMAGE_MAX_DIM_PX`（default 1024）
+- `IMAGE_JPEG_QUALITY`（default 85）
+- `PER_USER_IMAGE_COOLDOWN_SEC`（default 15）
+- `DISABLE_IMAGE_ANALYZE`（1/true/yes → 關閉圖片分析，改走文字流程）
+
+建議將 `Pillow` 加入 `requirements.txt`，以啟用圖片壓縮功能，節省上傳大小與 API 額度。
+
+## 圖片（多模態）策略（Free-first）
+
+此專案採用「免費優先」設計：在能使用 Gemini 的多模態（GenerativeModel）API 時會直接發送壓縮後的 JPEG 圖片與上下文 prompt；若環境不支援或模型回應錯誤/超時，會自動降級至文字分析流程，並以友善訊息引導使用者改以文字描述。
+
+要點：
+- 圖片驗證：僅接受 JPG/PNG，且大小 ≤ `MAX_IMAGE_MB`。由 `utils.validate_image` 檢查。
+- 壓縮：上傳後會先用 `utils.compress_image_to_jpeg`（Pillow）將圖片長邊縮到 `IMAGE_MAX_DIM_PX` 並轉為 JPEG（quality 由 `IMAGE_JPEG_QUALITY` 控制）。
+- 節流：每位使用者預設 `PER_USER_IMAGE_COOLDOWN_SEC` 秒內只允許一次圖片分析以減少額度消耗。
+- 臨時關閉：若你需要臨時停止圖片分析以避免額度或 SDK 問題，可在部署環境設 `DISABLE_IMAGE_ANALYZE=1`，Bot 會直接回覆文字導引。
+
+## Debug endpoints
+
+開發/部署時可用以下 endpoint 快速檢查狀態：
+- `GET /healthz` → 回傳 `ok`（200）
+- `GET /_debug/handler_status` → 告訴你 handler 與 line_bot_api 是否已初始化
+- `GET /_debug/env_presence` → 檢查重要 env 變數是否存在（不回傳值）
+- `GET /_debug/genai_caps` → 檢查部署環境中 `google.generativeai` 模組與 API 能力（會回傳 `has_GenerativeModel`, `has_ImageGeneration`, `version` 等）。
+
+若 `/_debug/genai_caps` 顯示 `has_GenerativeModel: true`，代表你可使用 `GenerativeModel.generate_content(...)` 做多模態呼叫（本專案使用該路徑）。
+
+## 本機測試圖片分析（快速）
+
+在本機上直接測試 `analyze_outfit_image`（不經 LINE webhook）：
+
+1. 安裝 Pillow：
+
+```powershell
+pip install Pillow
+```
+
+2. 建立一個測試腳本 `scripts/test_analyze_image.py`（或直接用 python -c）：
+
+```python
+# scripts/test_analyze_image.py
+import os, json, argparse
+from gemini_client import analyze_outfit_image
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--image', '-i', required=True)
+args = parser.parse_args()
+
+os.environ.setdefault('GENAI_API_KEY', os.environ.get('GENAI_API_KEY',''))
+
+with open(args.image, 'rb') as f:
+   b = f.read()
+
+try:
+   parsed = analyze_outfit_image('上班','正式','白天/晴', b, mime='image/jpeg', timeout=20)
+   print(json.dumps(parsed, ensure_ascii=False, indent=2))
+except Exception as e:
+   print('ERROR', type(e).__name__, str(e))
+```
+
+3. 執行（PowerShell）：
+
+```powershell
+
+python .\scripts\test_analyze_image.py --image .\tests\fixtures\sample.jpg
+```
+
+如果回傳有效 JSON（包含 `overall_score` 與 `subscores` 等欄位），代表 multi-modal pipeline 在你本機可用；若發生 429 / Timeout / Schema error，程式會在 handler 端自動降級為文字流程。
+
+## 在 Render 上部署與檢查（要點）
+
+1. Push 你的程式到 GitHub（或你使用的來源），Render 會自動建置。
+2. 在 Render Dashboard 的 Service 設定中，設定必要的環境變數（`LINE_CHANNEL_*`, `GENAI_API_KEY`, `SENTRY_DSN`）。
+3. 若想臨時停用圖片分析：在 Render 的 Environment Variables 新增 `DISABLE_IMAGE_ANALYZE=1` 並重新部署；若想啟用或回到圖片分析，設成 `0` 或移除該變數並重新部署。
+4. 呼叫 `https://<your-service>/_debug/genai_caps`，確認 `has_GenerativeModel` 為 `true`（若為 false，請參照下方套件升級步驟）。
+
+升級 `google-generativeai`（如果 _debug 顯示需要）：
+
+- 建議在 `requirements.txt` 指定較新的版本或在 Dockerfile 中更新安裝。例如把 `google-generativeai==0.3.0` 改為 `google-generativeai>=0.4.0`（請依 upstream 版本實際情況調整），然後 push 使 Render 重新 build。
+
+若你必須臨時在部署環境執行升級（不建議常態採取）：
+
+```powershell
+# 在 Render 的 shell (若有) 執行
+pip install --upgrade google-generativeai
+```
+
+## .env.example（建議）
+
+```env
+LINE_CHANNEL_SECRET=
+LINE_CHANNEL_ACCESS_TOKEN=
+GENAI_API_KEY=
+SENTRY_DSN=
+REDIS_URL=
+MAX_IMAGE_MB=10
+IMAGE_MAX_DIM_PX=1024
+IMAGE_JPEG_QUALITY=85
+PER_USER_IMAGE_COOLDOWN_SEC=15
+DISABLE_IMAGE_ANALYZE=0
+```
+
+## 測試清單（UAT）
+
+- 上傳 **JPG/PNG < MAX_IMAGE_MB** → 預期得到 JSON 與 Flex 回覆（或文字 fallback）
+- 在冷卻時間內重複上傳 → 第二次被節流提示
+- 上傳 HEIC/WEBP/超大檔 → 立即回錯誤提示
+- 模擬 429/Timeout（或改變 SDK 版本導致錯誤）→ 自動降級到文字引導
+- 設 `DISABLE_IMAGE_ANALYZE=1` → 圖片路徑關閉，改走文字導引
+
+## 開發、測試與貢獻
+
+- 測試：
+
+```powershell
+pytest -q
+```
+
+- 若要新增圖片相關測試，建議新增以下檔案：
+  - `tests/test_image_validate.py`
+  - `tests/test_image_compress.py`
+  - `tests/test_rate_limit.py`
+  - `tests/test_image_to_text_fallback.py`
+
+---
+
+感謝使用，若需要我幫你把 `Pillow` 寫入 `requirements.txt` 並新增剛才的 `scripts/test_analyze_image.py`，我可以直接幫你修改並 push。
 ## 3. 快速啟動 & 環境變數
 
 建議使用 Python 3.11+。
