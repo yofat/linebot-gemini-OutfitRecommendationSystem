@@ -257,23 +257,142 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         except Exception:
             return None
 
+    def _normalize_parts_for_sdk(parts):
+        """Return a list of possible parts shapes to try for different SDKs.
+
+        The google.generativeai SDK has changed shape expectations across
+        versions. We prepare several candidate representations and try them in
+        order until one succeeds.
+        """
+        candidates = []
+        # Newer SDK shape: Content with 'parts' where each Part has either 'text' or 'inline_data'
+        try:
+            content_shape = [
+                {'parts': [{'text': prompt + '\n' + context_text}]},
+                {'parts': [{'inline_data': {'mime_type': mime, 'data': image_bytes}}]}
+            ]
+            candidates.append(content_shape)
+        except Exception:
+            # If prompt/mime/image_bytes are not available for some reason, skip
+            pass
+        # Original shape used in this project: [{'type':'input_text','text':...}, {'mime_type':..., 'data': ...}]
+        candidates.append(parts)
+
+        # Variant A: remove explicit 'type' key for text parts, use {'text':...}
+        try:
+            alt = []
+            for p in parts:
+                if isinstance(p, dict) and p.get('type') == 'input_text':
+                    alt.append({'text': p.get('text')})
+                elif isinstance(p, dict) and 'mime_type' in p and 'data' in p:
+                    alt.append({'mime_type': p.get('mime_type'), 'data': p.get('data')})
+                else:
+                    alt.append(p)
+            candidates.append(alt)
+        except Exception:
+            pass
+
+        # Variant B: wrap text as content field (some SDKs expect content list)
+        try:
+            alt2 = []
+            for p in parts:
+                if isinstance(p, dict) and 'text' in p:
+                    alt2.append({'content': [{'type': 'text', 'text': p.get('text')}]})
+                elif isinstance(p, dict) and 'data' in p:
+                    alt2.append({'image': {'mime_type': p.get('mime_type'), 'data': p.get('data')}})
+                else:
+                    alt2.append(p)
+            candidates.append(alt2)
+        except Exception:
+            pass
+
+        # Variant C: mixed simplified mapping
+        try:
+            alt3 = []
+            for p in parts:
+                if isinstance(p, dict) and p.get('type') == 'input_text':
+                    alt3.append(p.get('text'))
+                elif isinstance(p, dict) and 'data' in p:
+                    # some sdks accept the image as bytes directly in a tuple
+                    alt3.append(('image/jpeg', p.get('data')))
+                else:
+                    alt3.append(p)
+            candidates.append(alt3)
+        except Exception:
+            pass
+
+        return candidates
+
+    def _strip_type_keys(obj):
+        """Recursively remove any 'type' keys from dicts inside obj.
+
+        Some SDKs reject any Part dict containing a 'type' field. This helper
+        produces a sanitized copy suitable as a final aggressive fallback.
+        """
+        import copy
+
+        def _rec(o):
+            if isinstance(o, dict):
+                new = {}
+                for k, v in o.items():
+                    if k == 'type':
+                        # skip
+                        continue
+                    new[k] = _rec(v)
+                return new
+            if isinstance(o, list):
+                return [_rec(i) for i in o]
+            return copy.copy(o)
+
+        return _rec(parts)
+
     try:
         # Prefer GenerativeModel API if available
         if hasattr(genai, 'GenerativeModel'):
             model = _create_generative_model('gemini-1.5-flash')
             if model is None:
                 raise GeminiAPIError('Unable to instantiate GenerativeModel with this google.generativeai version')
-            # generate_content may accept parts and request_options
-            # Support both positional and keyword styles for different SDKs
-            try:
-                resp = model.generate_content(parts, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
-            except TypeError:
-                # Some SDK variants expect different param names/order
+
+            # Try multiple candidate parts shapes until one works
+            last_exc = None
+            tried_candidates = list(_normalize_parts_for_sdk(parts))
+            # aggressive sanitized candidate (strip 'type' keys) as higher priority when unknown-field errors occur
+            sanitized = _strip_type_keys(parts)
+            if sanitized not in tried_candidates:
+                tried_candidates.append(sanitized)
+
+            for candidate in tried_candidates:
                 try:
-                    resp = model.generate_content(parts, request_options={'timeout': timeout})
-                except TypeError:
-                    # Fallback: try single-arg call
-                    resp = model.generate_content(parts)
+                    # generate_content may accept parts and request_options
+                    resp = model.generate_content(candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+                    last_exc = None
+                    break
+                except TypeError as te:
+                    # signature mismatch; try next
+                    last_exc = te
+                    continue
+                except Exception as e:
+                    # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
+                    msg = str(e)
+                    if 'Unknown field for Part' in msg or 'Unknown field' in msg or 'Invalid Part' in msg:
+                        # if unknown field, try sanitized candidate next
+                        last_exc = e
+                        continue
+                    # otherwise surface the error
+                    raise
+            if last_exc:
+                # If the SDK rejects Part due to unexpected fields (common when
+                # SDK/Proto definitions differ), prefer graceful fallback to
+                # raising an exception which bubbles to the handler. This keeps
+                # the bot responsive and allows the UI to guide the user to
+                # a text-based fallback.
+                msg = str(last_exc)
+                logger.warning('All parts candidates failed: %s', msg)
+                if 'Unknown field' in msg or 'Unknown field for Part' in msg:
+                    # return a friendly fallback JSON explaining the reason
+                    return _fallback_outfit_json(f'Image analysis not supported in this deployment: {msg}')
+                # otherwise re-raise the last exception
+                raise last_exc
             # try to extract JSON string from response
             # support object-like and dict-like
             out = getattr(resp, 'output', None) or (resp if isinstance(resp, dict) and 'output' in resp else None)
@@ -301,7 +420,14 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
     except GeminiAPIError:
         raise
     except Exception as e:
+        # If the SDK/proto rejects certain Part fields (e.g. 'type'), prefer
+        # to return a graceful fallback rather than raising and causing a 500
+        # in the webhook handler. Log full exception for debugging.
+        msg = str(e)
         logger.exception('Unexpected error during analyze_outfit_image')
+        if 'Unknown field' in msg or 'Unknown field for Part' in msg:
+            logger.warning('Detected SDK Part schema mismatch; returning fallback JSON')
+            return _fallback_outfit_json(f'Image analysis not supported in this deployment: {msg}')
         raise GeminiAPIError(str(e))
 
 
