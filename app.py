@@ -140,6 +140,45 @@ def _debug_genai_caps():
     return caps, 200
 
 
+@app.route('/_debug/build_info', methods=['GET'])
+def _debug_build_info():
+    """Return lightweight build/deploy info and genai caps.
+
+    Tries (in order):
+    - environment variable COMMIT_HASH (can be set during CI/build)
+    - read from .git if available
+    - fallback to 'unknown'
+    """
+    commit = os.getenv('COMMIT_HASH')
+    if not commit:
+        # try to read git HEAD (best-effort; may not exist in some build setups)
+        try:
+            import subprocess
+            p = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, check=True)
+            commit = p.stdout.strip()
+        except Exception:
+            commit = 'unknown'
+
+    # reuse genai_caps endpoint logic
+    try:
+        import importlib
+        genai = importlib.import_module('google.generativeai')
+        ver = getattr(genai, '__version__', None) or getattr(genai, 'VERSION', None)
+        images_attr = hasattr(genai, 'images') and hasattr(getattr(genai, 'images'), 'generate')
+        caps = {
+            'module_loaded': True,
+            'version': ver,
+            'has_configure': hasattr(genai, 'configure'),
+            'has_GenerativeModel': hasattr(genai, 'GenerativeModel'),
+            'has_ImageGeneration': hasattr(genai, 'ImageGeneration'),
+            'has_images_generate': bool(images_attr)
+        }
+    except Exception as e:
+        caps = {'module_loaded': False, 'error': str(e)}
+
+    return {'commit': commit, 'genai_caps': caps}, 200
+
+
 if __name__ == '__main__':
     _start_cleanup()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
