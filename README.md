@@ -170,5 +170,3 @@ pytest -q
 - 貢獻：歡迎提交 PR 或 issue；若要擴充 PI 規則、調整 prompt 或更換 LLM，請同時新增對應測試與說明。
 
 ---
-
-如果你希望，我可以為 README 建立一個簡短的變更記錄（CHANGELOG）或把路由說明另存為獨立的 `ROUTES.md`。
