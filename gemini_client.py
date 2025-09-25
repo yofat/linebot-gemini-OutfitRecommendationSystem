@@ -268,9 +268,10 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         # Newer SDK shape: Content with 'parts' where each Part has either 'text' or 'inline_data'
         try:
             # Some SDK variants expect a Part with a text/message including a role
-            text_part = {'role': 'user', 'text': prompt + '\n' + context_text}
+            # Ensure 'text' is a plain string and 'role' is a sibling key on the Part
+            prompt_str = prompt + '\n' + context_text
             content_shape = [
-                {'parts': [{'text': text_part}]},
+                {'parts': [{'text': prompt_str, 'role': 'user'}]},
                 {'parts': [{'inline_data': {'mime_type': mime, 'data': image_bytes}}]}
             ]
             candidates.append(content_shape)
