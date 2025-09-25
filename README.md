@@ -79,7 +79,7 @@
 
 - 三題引導（地點/目的/時間）以 Postback/Quick Reply 驅動，最後請使用者上傳圖片進行評分。
 - 圖片驗證：檔案格式（JPG/PNG）與大小限制（預設 10MB，可透過環境變數調整）。
-- Prompt Injection（PI）防護：在把使用者內容加入 prompt 前執行偵測與淨化，必要時直接回覆安全拒絕訊息而不呼叫 LLM。
+- Prompt Injection（PI）防護：在把使用者內容加入 prompt 前執行偵測與淨化，必要時直接回覆安全拒絕訊息（`SAFE_REFUSAL`）。
 - Sentry 整合：錯誤與高風險事件會上報 Sentry，並加上匿名化使用者標記與關鍵 tag/extra。
 - State 抽象：支援 MemoryState（本機）與 RedisState（生產），方便測試與水平擴充。
 - Gemini client：封裝呼叫到 Google Generative API（包含 timeout、重試與錯誤處理）。
@@ -99,12 +99,12 @@ set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
 
 主要環境變數（範例）：
 
-- LINE_CHANNEL_SECRET - LINE channel secret
-- LINE_CHANNEL_ACCESS_TOKEN - LINE channel access token
-- GEMINI_API_KEY - Google Gemini API key
-- SENTRY_DSN - Sentry DSN（可選）
-- REDIS_URL - 若要使用 RedisState，設定此變數
-- MAX_IMAGE_MB - 圖片最大允許 MB（預設 10）
+- `LINE_CHANNEL_SECRET` - LINE channel secret
+- `LINE_CHANNEL_ACCESS_TOKEN` - LINE channel access token
+- `GEMINI_API_KEY` - Google Gemini API key
+- `SENTRY_DSN` - Sentry DSN（可選）
+- `REDIS_URL` - 若要使用 RedisState
+- `MAX_IMAGE_MB` - 圖片最大允許 MB（預設 10）
 
 容器化：專案包含 `Dockerfile` 與 `docker-compose.yml`，可在生產環境中使用。
 
@@ -123,9 +123,33 @@ set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
 ```powershell
 # 1. 啟動 flask
 set FLASK_APP=app.py; flask run --host=0.0.0.0 --port=8080
-# 2. 使用 ngrok 或其他反向代理將 /webhook 暴露給 LINE
+# 2. 使用 ngrok 或其他反向代理將 /callback 暴露給 LINE
 # 3. 在 LINE 官方後台設定 webhook URL 並啟用
 ```
+
+## Routes（路由）
+
+本專案在 `app.py` 中暴露下列主要 HTTP 路徑，請依說明設定與驗證：
+
+- `GET /healthz`
+  - 說明：健康檢查（health check），用於確認應用是否正在運行以及基本依賴是否可用。
+  - 方法：GET
+  - 回應：HTTP 200 與 body `ok`。
+  - 使用情境：可用於平台的 readiness/liveness probe 或手動檢查。
+
+- `POST /callback`（LINE webhook endpoint）
+  - 說明：LINE Platform 的 webhook 請求會送到此路徑。程式會驗證 `X-Line-Signature` 標頭，然後把事件交給 `handlers.py` 處理（文字、圖片、postback、follow 等）。
+  - 方法：POST
+  - 必要 Header：`X-Line-Signature`（用於驗證 payload 的完整性，需與 `LINE_CHANNEL_SECRET` 對應）。
+  - Body：LINE 傳送的 JSON 事件陣列（events）。若簽章驗證失敗，伺服器會回 400。
+  - 在 LINE Developers Console 的 Messaging API 中，請將 Webhook URL 設為：
+    - `https://<your-domain>/callback`（若你修改程式路由，請相對應調整）。
+
+注意：文件歷史版本可能提到 `/webhook`，但目前程式預設為 `/callback`（參見 `app.py` 的 `@app.route('/callback', methods=['POST'])`）。如果你想保留 `/webhook` 作為路徑，可修改 `app.py` 中的 route 並重新部署。
+
+排錯小貼士：
+- 若 LINE Console 的 Verify 失敗，請檢查：Render domain、路徑（應為 `/callback`）、是否使用 HTTPS、以及 Render 上的 `LINE_CHANNEL_SECRET` 是否與 LINE Console 的 Channel secret 一致。
+- 若收到 400/401/403，通常表示簽章或權杖（access token）錯誤；檢查 `LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_CHANNEL_SECRET` 是否在環境變數內正確設定。
 
 ## 5. Prompt Injection 與安全策略
 
@@ -146,3 +170,5 @@ pytest -q
 - 貢獻：歡迎提交 PR 或 issue；若要擴充 PI 規則、調整 prompt 或更換 LLM，請同時新增對應測試與說明。
 
 ---
+
+如果你希望，我可以為 README 建立一個簡短的變更記錄（CHANGELOG）或把路由說明另存為獨立的 `ROUTES.md`。
