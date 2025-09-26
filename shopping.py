@@ -147,7 +147,7 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
             return
         # prefer brand domains first, then marketplaces
         for domain in SHOP_DOMAINS:
-            _append(f"{base} site:{domain} {SHOP_REGION}")
+            _append(f"{base} site:{domain}")
             if len(queries) >= 10:
                 return
         # synonyms expansion for the base phrase (if matches a key)
@@ -155,14 +155,14 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
         for sterm in syns:
             base2 = re.sub(r'\s+', ' ', (sterm + ' ' + ' '.join(context_terms)).strip())
             for domain in SHOP_DOMAINS:
-                _append(f"{base2} site:{domain} {SHOP_REGION}")
+                _append(f"{base2} site:{domain}")
                 if len(queries) >= 10:
                     return
         # brand-prefixed variants (brand name token + base)
         for brand_domain in SHOP_BRANDS:
             brand_name = brand_domain.split('.')[0]
             bp = re.sub(r'\s+', ' ', (brand_name + ' ' + base).strip())
-            _append(f"{bp} site:{brand_domain} {SHOP_REGION}")
+            _append(f"{bp} site:{brand_domain}")
             if len(queries) >= 10:
                 return
 
@@ -198,7 +198,7 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
     # fallback: if still empty, use plain context + some domains
     if not queries:
         for domain in SHOP_DOMAINS:
-            _append(f"{purpose} {scene} site:{domain} {SHOP_REGION}")
+            _append(f"{purpose} {scene} site:{domain}")
             if len(queries) >= 5:
                 break
 
