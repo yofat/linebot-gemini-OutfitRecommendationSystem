@@ -37,6 +37,16 @@ from security.messages import SAFE_REFUSAL
 from sentry_init import set_user as sentry_set_user, set_tag as sentry_set_tag, capture_exception as sentry_capture_exception, set_extra as sentry_set_extra
 from templates.flex_outfit import build_flex_payload
 try:
+    from shopping import build_queries_from_suggestions, search_products, format_for_flex, user_allowed, SHOP_MAX_RESULTS, SHOP_CURRENCY
+except Exception:
+    # allow tests to run even if shopping deps missing
+    build_queries_from_suggestions = None  # type: ignore
+    search_products = None  # type: ignore
+    format_for_flex = None  # type: ignore
+    user_allowed = None  # type: ignore
+    SHOP_MAX_RESULTS = int(os.getenv('SHOP_MAX_RESULTS', '8'))
+    SHOP_CURRENCY = os.getenv('SHOP_CURRENCY', 'TWD')
+try:
     from linebot.models import QuickReply, QuickReplyButton, MessageAction, PostbackAction
 except Exception:
     # Provide minimal shims so module can be imported in test environments without full SDK
@@ -448,7 +458,13 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='發生錯誤，請稍後再試或改用文字描述'))
             return
 
-        clear_state(user_id)
+        # preserve last analysis in state so user can request shopping recommendations
+        try:
+            # keep context and last_analysis for short-term retrieval
+            set_state(user_id, phase='DONE', last_analysis=parsed, context=st.get('context', {}), analysis_ts=int(time.time()))
+        except Exception:
+            # fallback to clearing if state store fails
+            clear_state(user_id)
 
         if not parsed or not isinstance(parsed, dict):
             # parsed should be a dict matching expected schema; if not, inform user and fallback to text guidance
@@ -479,6 +495,21 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             flex_payload = build_flex_payload(overall_int, subs, summary, suggestions)
             flex = FlexSendMessage(alt_text=f'穿搭評分 {overall_int}', contents=flex_payload)
             line_bot_api.reply_message(event.reply_token, flex)
+            # offer quick-reply to fetch shopping recommendations
+            try:
+                if build_queries_from_suggestions is not None:
+                    qr = QuickReply(items=[
+                        QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop')),
+                    ])
+                    msg = TextSendMessage(text='要看推薦單品嗎？',)
+                    try:
+                        setattr(msg, 'quick_reply', qr)
+                    except Exception:
+                        pass
+                    line_bot_api.push_message(user_id, msg)
+            except Exception:
+                # non-fatal
+                pass
         except Exception:
             logger.exception('failed to send flex message, fallback to text')
             # fallback to text messages
@@ -491,6 +522,18 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                     line_bot_api.push_message(user_id, m)
             except Exception:
                 logger.exception('failed to send fallback messages')
+            # also offer quick-reply even on fallback text
+            try:
+                if build_queries_from_suggestions is not None:
+                    qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
+                    m = TextSendMessage(text='要看推薦單品嗎？')
+                    try:
+                        setattr(m, 'quick_reply', qr)
+                    except Exception:
+                        pass
+                    line_bot_api.push_message(user_id, m)
+            except Exception:
+                pass
 
     @handler.add(PostbackEvent)
     def on_postback(event):
@@ -536,6 +579,58 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             ctx['time_weather'] = data.split('=', 1)[1]
             set_state(user_id, stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
+            return
+        # shopping action trigger (quick-reply)
+        if data == 'action=shop':
+            # check feature flag
+            if os.getenv('ENABLE_SHOPPING', '1').lower() not in ('1', 'true', 'yes'):
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='目前未開啟單品推薦功能。'))
+                return
+            # user throttle
+            if user_allowed is None:
+                # shopping module not available
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='購物推薦功能暫時無法使用'))
+                return
+            if not user_allowed(user_id):
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='排隊中，請稍後再試'))
+                return
+            st = get_state(user_id) or {}
+            last = st.get('last_analysis')
+            ctx = st.get('context', {})
+            if not last or not isinstance(last, dict):
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='找不到先前的分析結果，請先上傳圖片或重新執行評分流程'))
+                return
+            suggestions = last.get('suggestions', [])
+            scene = ctx.get('scene', '')
+            purpose = ctx.get('purpose', '')
+            time_weather = ctx.get('time_weather', '')
+            try:
+                queries = build_queries_from_suggestions(suggestions, scene, purpose, time_weather)
+                products = search_products(queries, max_results=SHOP_MAX_RESULTS)
+                if not products:
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))
+                    return
+                carousel = format_for_flex(products, currency=SHOP_CURRENCY)
+                # prepend a disclaimer
+                disclaimer = TextSendMessage(text='連結資訊與價格可能有變動，請以目標頁面為準。')
+                try:
+                    # if carousel is text fallback
+                    if isinstance(carousel, dict) and carousel.get('type') == 'text':
+                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=carousel.get('text')))
+                        return
+                    fs = FlexSendMessage(alt_text='推薦單品', contents=carousel)
+                    line_bot_api.reply_message(event.reply_token, [disclaimer, fs])
+                except Exception:
+                    # fallback to text list
+                    lines = []
+                    for p in products[:5]:
+                        t = f"{p.get('title')} - {p.get('price_text') or ''} \n{p.get('url')}"
+                        lines.append(t)
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text='\n\n'.join(lines)))
+            except Exception as e:
+                logger.exception('shopping pipeline failed')
+                sentry_capture_exception(e)
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='搜尋時發生錯誤，請稍後再試'))
             return
 
     if FollowEvent is not None:

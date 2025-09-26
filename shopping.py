@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Tuple, Optional
-from duckduckgo_search import DDGS
+from duckduckgo_search import ddg
 import re
 import time
 import os
@@ -49,7 +49,8 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
     將模型的 suggestions[]（中文）解析出單品、顏色、版型、材質等詞，並組合查詢。
     會加上場景/目的詞與 site:domain 標註，產生多個查詢字串，最多 10 條。
     """
-    terms = set()
+    terms = []
+    _seen_terms = set()
     # naive tokenization: split by punctuation and whitespace, keep CJK characters groups
     for s in suggestions:
         s = s.strip()
@@ -59,11 +60,19 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
             p = p.strip()
             if not p:
                 continue
-            # remove filler words
-            p = re.sub(r"(的|、|款|款式|風格|類型|材質|顏色)", '', p)
-            # keep short phrases
-            if 1 <= len(p) <= 40:
-                terms.add(p)
+            # split on whitespace to capture individual tokens (e.g., '白色 素T')
+            subparts = re.split(r'\s+', p)
+            for sp in subparts:
+                sp = sp.strip()
+                if not sp:
+                    continue
+                # remove filler words
+                sp = re.sub(r"(的|、|款|款式|風格|類型|材質|顏色)", '', sp)
+                # keep short phrases
+                if 1 <= len(sp) <= 40:
+                    if sp not in _seen_terms:
+                        _seen_terms.add(sp)
+                        terms.append(sp)
 
     # also include scene/purpose/time
     context_terms = [t for t in (scene, purpose, time_weather) if t]
@@ -85,12 +94,41 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
             break
 
     # Build final query strings, add context and site: for each domain
+    # Also ensure single-term queries for tokens are present (so colors/items appear)
+    for t in term_list:
+        base = ' '.join([t] + context_terms)
+        base = re.sub(r'\s+', ' ', base).strip()
+        if not base:
+            continue
+        for domain in SHOP_DOMAINS:
+            q = f"{base} site:{domain} {SHOP_REGION}"
+            queries.append(q)
+            if len(queries) >= 10:
+                break
+        if len(queries) >= 10:
+            break
+
     for combo in combos[:5]:
         base = ' '.join(combo + context_terms)
         base = re.sub(r'\s+', ' ', base).strip()
         if not base:
             continue
         # add site variants
+        for domain in SHOP_DOMAINS:
+            q = f"{base} site:{domain} {SHOP_REGION}"
+            queries.append(q)
+            if len(queries) >= 10:
+                break
+        if len(queries) >= 10:
+            break
+
+    # also include original suggestion phrases (to preserve multi-token phrases like '白色 素T')
+    for s in suggestions:
+        s = s.strip()
+        if not s:
+            continue
+        base = ' '.join([s] + context_terms)
+        base = re.sub(r'\s+', ' ', base).strip()
         for domain in SHOP_DOMAINS:
             q = f"{base} site:{domain} {SHOP_REGION}"
             queries.append(q)
@@ -148,7 +186,7 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
     """
     使用 DDGS().text 逐條查詢，每條取前 5~8 筆，過濾 domain 白名單並做快取與去重。
     """
-    ddgs = DDGS()
+    # use ddg() function from duckduckgo_search which returns a list of hits
     if max_results is None:
         max_results = SHOP_MAX_RESULTS
     results: List[Dict[str, Any]] = []
@@ -166,8 +204,9 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
             time.sleep(delay)
             hits = []
             try:
-                for r in ddgs.text(q):
-                    # each r has 'title' and 'href'
+                ddg_hits = ddg(q, region=SHOP_REGION, safesearch='Off', max_results=8)
+                for r in ddg_hits:
+                    # ddg returns keys like 'title' and 'href'
                     title = r.get('title') or ''
                     url = r.get('href') or r.get('url') or ''
                     if not url:
@@ -188,8 +227,8 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
                         'query': q,
                     }
                     hits.append(hit)
-                    if len(hits) >= 8:
-                        break
+            except Exception:
+                hits = []
             except Exception:
                 hits = []
             _cache_set(ck, hits)
