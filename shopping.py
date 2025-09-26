@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Tuple, Optional
 from duckduckgo_search import ddg
+import logging
 import re
 import time
 import os
@@ -15,8 +16,13 @@ _cache_lock = RLock()
 CACHE_TTL_SECONDS = int(os.getenv('SHOP_CACHE_TTL_SEC', str(12 * 3600)))  # default 12 hours
 
 # Domain whitelist from env
-SHOP_DOMAINS_TW = os.getenv('SHOP_DOMAINS_TW', 'shopee.tw,momo.com.tw,24h.pchome.com.tw,uniqlo.com,hm.com,tw.buy.yahoo.com,zara.com')
-SHOP_DOMAINS = [d.strip().lower() for d in SHOP_DOMAINS_TW.split(',') if d.strip()]
+SHOP_DOMAINS_TW = os.getenv('SHOP_DOMAINS_TW', 'lativ.tw,uniqlo.com,hm.com,zara.com,shopee.tw,momo.com.tw,24h.pchome.com.tw,tw.buy.yahoo.com')
+_all_domains = [d.strip().lower() for d in SHOP_DOMAINS_TW.split(',') if d.strip()]
+# classify into marketplaces (general ecommerce) vs brands
+SHOP_MARKETPLACES = [d for d in _all_domains if any(k in d for k in ('shopee', 'momo', 'pchome', 'yahoo'))]
+SHOP_BRANDS = [d for d in _all_domains if d not in SHOP_MARKETPLACES]
+# prefer brands first (focus on clothing) then marketplaces
+SHOP_DOMAINS = SHOP_BRANDS + SHOP_MARKETPLACES
 
 SHOP_MAX_RESULTS = int(os.getenv('SHOP_MAX_RESULTS', '8'))
 SHOP_REGION = os.getenv('SHOP_REGION', 'tw')
@@ -26,6 +32,20 @@ SHOP_CURRENCY = os.getenv('SHOP_CURRENCY', 'TWD')
 _user_last_trigger: Dict[str, float] = {}
 _user_lock = RLock()
 USER_THROTTLE_SECONDS = int(os.getenv('SHOP_USER_THROTTLE_SEC', '60'))
+
+
+# DuckDuckGo ddg() failure circuit-breaker state to avoid log spam
+_ddg_failure_count = 0
+_ddg_failure_window_start = 0.0
+_DDG_FAILURE_THRESHOLD = int(os.getenv('SHOP_DDG_FAIL_THRESHOLD', '8'))
+_DDG_COOLDOWN_SEC = int(os.getenv('SHOP_DDG_COOLDOWN_SEC', '300'))  # cooldown after threshold
+_ddg_disabled_until = 0.0
+
+# reduce noisy logs from duckduckgo_search internals
+try:
+    logging.getLogger('duckduckgo_search.utils').setLevel(logging.ERROR)
+except Exception:
+    pass
 
 
 def _cache_get(key: str) -> Optional[Any]:
@@ -95,12 +115,13 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
 
     # Build final query strings, add context and site: for each domain
     # Also ensure single-term queries for tokens are present (so colors/items appear)
+    # prefer marketplaces first for single-term queries
     for t in term_list:
         base = ' '.join([t] + context_terms)
         base = re.sub(r'\s+', ' ', base).strip()
         if not base:
             continue
-        for domain in SHOP_DOMAINS:
+        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
             q = f"{base} site:{domain} {SHOP_REGION}"
             queries.append(q)
             if len(queries) >= 10:
@@ -113,8 +134,8 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
         base = re.sub(r'\s+', ' ', base).strip()
         if not base:
             continue
-        # add site variants
-        for domain in SHOP_DOMAINS:
+        # add site variants, marketplaces first
+        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
             q = f"{base} site:{domain} {SHOP_REGION}"
             queries.append(q)
             if len(queries) >= 10:
@@ -129,7 +150,7 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
             continue
         base = ' '.join([s] + context_terms)
         base = re.sub(r'\s+', ' ', base).strip()
-        for domain in SHOP_DOMAINS:
+        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
             q = f"{base} site:{domain} {SHOP_REGION}"
             queries.append(q)
             if len(queries) >= 10:
@@ -193,6 +214,13 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
     seen_urls = set()
 
     for q in queries:
+        # circuit-breaker: if ddg has been failing, skip heavy calls until cooldown
+        now = time.time()
+        global _ddg_failure_count, _ddg_failure_window_start, _ddg_disabled_until
+        if _ddg_disabled_until and now < _ddg_disabled_until:
+            # short-circuit: ddg currently disabled, return empty quickly
+            _cache_set(f"ddg:{q}", [], ttl=60)
+            continue
         # cache key per query
         ck = f"ddg:{q}"
         cached = _cache_get(ck)
@@ -233,11 +261,24 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
                                 'query': q,
                             }
                             hits.append(hit)
+                    # reset failure window on success
+                    _ddg_failure_count = 0
+                    _ddg_failure_window_start = 0.0
                     last_exc = None
                     break
                 except Exception as e:
                     # duckduckgo_search internals sometimes fail to extract vqd; retry with backoff
                     last_exc = e
+                    # increment failure counter (windowed)
+                    tnow = time.time()
+                    if _ddg_failure_window_start == 0.0 or tnow - _ddg_failure_window_start > 60:
+                        _ddg_failure_window_start = tnow
+                        _ddg_failure_count = 1
+                    else:
+                        _ddg_failure_count += 1
+                    # if failures exceed threshold, set cooldown
+                    if _ddg_failure_count >= _DDG_FAILURE_THRESHOLD:
+                        _ddg_disabled_until = tnow + _DDG_COOLDOWN_SEC
                     backoff = 0.4 * (2 ** attempt)
                     time.sleep(backoff)
             if last_exc is not None and not hits:
