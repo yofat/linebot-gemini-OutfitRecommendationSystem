@@ -272,9 +272,10 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             if types_mod is not None and hasattr(types_mod, 'Content') and hasattr(types_mod, 'Part'):
                 try:
                     # Build a single Content with both a text Part and an inline_data Part
+                    # Avoid setting 'role' explicitly to reduce invalid-role errors across SDKs.
                     prompt_str = prompt + '\n' + context_text
                     content_obj = types_mod.Content(parts=[
-                        types_mod.Part(text=prompt_str, role='user'),
+                        types_mod.Part(text=prompt_str),
                         types_mod.Part(inline_data=types_mod.InlineData(mime_type=mime, data=image_bytes))
                     ])
                     candidates.append([content_obj])
@@ -512,7 +513,7 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                         raise
                 # end of per-model candidate loop
                 if last_exc:
-                    # if we broke due to model not found, continue to next model_name
+                    # If we broke due to model not found, continue to next model_name
                     continue
             # end of trying model names
             # if last_exc remains set after trying all models/candidates, handle below
@@ -524,6 +525,15 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                 # a text-based fallback.
                 msg = str(last_exc)
                 logger.warning('All parts candidates failed: %s', msg)
+                # If none of the configured models are available (404 / NotFound
+                # errors), return a helpful fallback instructing operator action
+                # instead of raising an internal error.
+                if ('was not found' in msg or 'not found or your project does not have access' in msg
+                        or 'Publisher Model' in msg):
+                    return _fallback_outfit_json(
+                        'No available Gemini model in this deployment. '
+                        'Please set GEMINI_MODEL_CANDIDATES to a model your project can access, '
+                        'or set DISABLE_IMAGE_ANALYZE=1 to skip image analysis.')
                 if 'Unknown field' in msg or 'Unknown field for Part' in msg:
                     # return a friendly fallback JSON explaining the reason
                     return _fallback_outfit_json(f'Image analysis not supported in this deployment: {msg}')
