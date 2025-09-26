@@ -151,6 +151,8 @@ def _debug_genai_caps():
                     'gemini-2.5-flash',
                     'gemini-2.5-pro',
                     'gemini-2.5-flash-lite',
+                    # preview/image specialized variant (add to default candidates)
+                    'gemini-2.5-flash-preview-image',
                     'gemini-2.0-flash-001',
                     'gemini-1.5-flash',
                     'gemini-1.5',
