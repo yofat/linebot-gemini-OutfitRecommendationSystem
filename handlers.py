@@ -3,7 +3,7 @@ import time
 import json
 import hashlib
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 try:
     import redis
 except Exception:
@@ -37,11 +37,108 @@ from security.messages import SAFE_REFUSAL
 from sentry_init import set_user as sentry_set_user, set_tag as sentry_set_tag, capture_exception as sentry_capture_exception, set_extra as sentry_set_extra
 from templates.flex_outfit import build_flex_payload
 try:
-    from shopping import build_queries_from_suggestions, search_products, format_for_flex, user_allowed, SHOP_MAX_RESULTS, SHOP_CURRENCY
+    from shopping_queries import build_queries
+    from shopping_rakuten import search_items, RakutenAPIError
+    from utils_flex import flex_rakuten_carousel
+
+    # in-memory keyword cache: keyword -> (ts, results)
+    _shopping_cache: Dict[str, Any] = {}
+    SHOP_CACHE_TTL = int(os.getenv('RAKUTEN_CACHE_TTL', str(12 * 3600)))  # 12 hours default
+
+    # per-user throttle for triggering shopping (seconds)
+    _user_shopping_ts: Dict[str, float] = {}
+    SHOP_USER_COOLDOWN = int(os.getenv('RAKUTEN_USER_COOLDOWN_SEC', '60'))
+
+    def _cache_get(keyword: str):
+        now = time.time()
+        rec = _shopping_cache.get(keyword)
+        if rec:
+            ts, val = rec
+            if now - ts < SHOP_CACHE_TTL:
+                return val
+            else:
+                _shopping_cache.pop(keyword, None)
+        return None
+
+    def _cache_set(keyword: str, val):
+        _shopping_cache[keyword] = (time.time(), val)
+
+    def user_allowed(uid: str) -> bool:
+        now = time.time()
+        last = _user_shopping_ts.get(uid)
+        if last and now - last < SHOP_USER_COOLDOWN:
+            return False
+        _user_shopping_ts[uid] = now
+        return True
+
+    def search_products(queries: list, max_results: int = 8):
+        """Orchestrate Rakuten searches for multiple queries until max_results collected.
+
+        Uses per-keyword cache and global rate-limit implemented in shopping_rakuten.
+        Returns list of normalized products.
+        """
+        provider_qps = 1.0
+        try:
+            provider_qps = float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1'))
+        except Exception:
+            provider_qps = 1.0
+
+        results = []
+        for q in queries:
+            if len(results) >= max_results:
+                break
+            # check cache
+            cached = _cache_get(q)
+            if cached is not None:
+                results.extend(cached)
+                if len(results) >= max_results:
+                    break
+                continue
+
+            try:
+                items = search_items(q, max_results=max_results, qps=provider_qps)
+                # store in cache
+                _cache_set(q, items)
+                results.extend(items)
+            except RakutenAPIError as e:
+                # bubble up to caller
+                raise
+            except Exception as e:
+                # on unexpected errors, capture and continue to next query
+                sentry_capture_exception(e)
+                continue
+
+        # dedupe by url
+        seen = set()
+        out = []
+        for p in results:
+            u = p.get('url')
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(p)
+            if len(out) >= max_results:
+                break
+        return out
+
+    def format_for_flex(products: list, currency: str = 'JPY'):
+        # add price_text for fallback listing
+        for p in products:
+            try:
+                if p.get('price') is not None:
+                    p['price_text'] = f"¥{int(p['price']):,}"
+                else:
+                    p['price_text'] = None
+            except Exception:
+                p['price_text'] = None
+        return flex_rakuten_carousel(products)
+
+    SHOP_MAX_RESULTS = int(os.getenv('RAKUTEN_MAX_RESULTS', '8'))
+    SHOP_CURRENCY = os.getenv('SHOP_CURRENCY', 'JPY')
 except Exception:
     # allow tests to run even if shopping deps missing
-    build_queries_from_suggestions = None  # type: ignore
-    search_products = None  # type: ignore
+    build_queries = None  # type: ignore
+    search_items = None  # type: ignore
     format_for_flex = None  # type: ignore
     user_allowed = None  # type: ignore
     SHOP_MAX_RESULTS = int(os.getenv('SHOP_MAX_RESULTS', '8'))
@@ -497,7 +594,7 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             # prepare reply items; include quick-reply as an additional message so user can opt-in to shopping
             reply_items = [flex]
             try:
-                if build_queries_from_suggestions is not None:
+                if build_queries is not None:
                     qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
                     qr_msg = TextSendMessage(text='要看推薦單品嗎？')
                     try:
@@ -524,13 +621,13 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                 logger.exception('failed to send fallback messages')
             # also offer quick-reply even on fallback text, but include in the same reply to avoid extra push
             try:
-                if build_queries_from_suggestions is not None:
-                    qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
-                    quick_msg = TextSendMessage(text='要看推薦單品嗎？')
-                    try:
-                        setattr(quick_msg, 'quick_reply', qr)
-                    except Exception:
-                        pass
+                    if build_queries is not None:
+                        qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
+                        quick_msg = TextSendMessage(text='要看推薦單品嗎？')
+                        try:
+                            setattr(quick_msg, 'quick_reply', qr)
+                        except Exception:
+                            pass
                     # assemble reply batch with quick_msg while respecting LINE's 5-message reply limit
                     if len(messages) >= 5:
                         reply_batch = messages[:4] + [quick_msg]
@@ -625,7 +722,7 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             purpose = ctx.get('purpose', '')
             time_weather = ctx.get('time_weather', '')
             try:
-                queries = build_queries_from_suggestions(suggestions, scene, purpose, time_weather)
+                queries = build_queries(suggestions, scene, purpose)
                 products = search_products(queries, max_results=SHOP_MAX_RESULTS)
                 if not products:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))

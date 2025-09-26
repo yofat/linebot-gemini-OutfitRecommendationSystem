@@ -8,3 +8,4 @@ tenacity==8.2.2
 redis==4.6.0
 Pillow==10.1.0
 duckduckgo-search==2.9.2
+requests==2.31.0
