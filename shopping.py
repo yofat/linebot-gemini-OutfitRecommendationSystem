@@ -16,7 +16,9 @@ _cache_lock = RLock()
 CACHE_TTL_SECONDS = int(os.getenv('SHOP_CACHE_TTL_SEC', str(12 * 3600)))  # default 12 hours
 
 # Domain whitelist from env
-SHOP_DOMAINS_TW = os.getenv('SHOP_DOMAINS_TW', 'lativ.tw,uniqlo.com,hm.com,zara.com,shopee.tw,momo.com.tw,24h.pchome.com.tw,tw.buy.yahoo.com')
+# Per user request, restrict default search to Lativ only (use netloc form)
+# user explicitly requested the WWW host form
+SHOP_DOMAINS_TW = os.getenv('SHOP_DOMAINS_TW', 'www.lativ.com.tw')
 _all_domains = [d.strip().lower() for d in SHOP_DOMAINS_TW.split(',') if d.strip()]
 # classify into marketplaces (general ecommerce) vs brands
 SHOP_MARKETPLACES = [d for d in _all_domains if any(k in d for k in ('shopee', 'momo', 'pchome', 'yahoo'))]
@@ -68,100 +70,129 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
     """
     將模型的 suggestions[]（中文）解析出單品、顏色、版型、材質等詞，並組合查詢。
     會加上場景/目的詞與 site:domain 標註，產生多個查詢字串，最多 10 條。
+    新增同義詞擴展與品牌前綴查詢以提高命中率。
     """
-    terms = []
+    # simple synonyms map to expand queries (domain-specific clothing synonyms)
+    SYNONYMS = {
+        '素T': ['T恤', '短袖', '素面T恤'],
+        '牛仔褲': ['牛仔褲', '牛仔 長褲', '牛仔 直筒'],
+        '皮革': ['皮革', '皮質', '皮面'],
+        '洋裝': ['連衣裙', '洋裝', '裙子'],
+        '襯衫': ['襯衫', '長袖襯衫', '短袖襯衫'],
+    }
+
+    terms: List[str] = []
     _seen_terms = set()
-    # naive tokenization: split by punctuation and whitespace, keep CJK characters groups
+    # naive tokenization: split by punctuation and whitespace
     for s in suggestions:
+        if not s:
+            continue
         s = s.strip()
-        # split on common punctuation
-        parts = re.split(r'[,;，；/\|\\\-\(\)\[\]：:]+', s)
+        parts = re.split(r'[，,;；/\|\\\-\(\)\[\]：:]+', s)
         for p in parts:
             p = p.strip()
             if not p:
                 continue
-            # split on whitespace to capture individual tokens (e.g., '白色 素T')
-            subparts = re.split(r'\s+', p)
-            for sp in subparts:
+            for sp in re.split(r'\s+', p):
                 sp = sp.strip()
                 if not sp:
                     continue
-                # remove filler words
                 sp = re.sub(r"(的|、|款|款式|風格|類型|材質|顏色)", '', sp)
-                # keep short phrases
-                if 1 <= len(sp) <= 40:
-                    if sp not in _seen_terms:
-                        _seen_terms.add(sp)
-                        terms.append(sp)
+                if 1 <= len(sp) <= 40 and sp not in _seen_terms:
+                    _seen_terms.add(sp)
+                    terms.append(sp)
 
-    # also include scene/purpose/time
+    # include scene/purpose/time
     context_terms = [t for t in (scene, purpose, time_weather) if t]
 
-    queries = []
-    # generate up to 5 base queries combining top terms
-    term_list = list(terms)[:8]
-    combos = []
-    # single-term queries
+    queries: List[str] = []
+
+    def _append(q: str):
+        if len(queries) >= 10:
+            return
+        queries.append(q)
+
+    term_list = terms[:8]
+    # prioritize item-like tokens (in SYNONYMS or containing ASCII letters) so we don't
+    # exhaust the query slots with colors only
+    prioritized = []
+    rest = []
     for t in term_list:
-        combos.append([t])
-    # two-term combos
-    for i in range(len(term_list)):
-        for j in range(i + 1, len(term_list)):
-            combos.append([term_list[i], term_list[j]])
+        if t in SYNONYMS or re.search(r'[A-Za-z0-9]', t):
+            prioritized.append(t)
+        else:
+            rest.append(t)
+    # interleave prioritized and rest so we keep both item tokens and colors
+    term_list = []
+    pi = 0
+    ri = 0
+    while pi < len(prioritized) or ri < len(rest):
+        if pi < len(prioritized):
+            term_list.append(prioritized[pi])
+            pi += 1
+        if ri < len(rest):
+            term_list.append(rest[ri])
+            ri += 1
+
+    # Helper to add site-scoped and brand-prefixed variants for a base phrase
+    def add_variants(base_phrase: str):
+        base = re.sub(r'\s+', ' ', (base_phrase + ' ' + ' '.join(context_terms)).strip())
+        if not base:
+            return
+        # prefer brand domains first, then marketplaces
+        for domain in SHOP_DOMAINS:
+            _append(f"{base} site:{domain} {SHOP_REGION}")
+            if len(queries) >= 10:
+                return
+        # synonyms expansion for the base phrase (if matches a key)
+        syns = SYNONYMS.get(base_phrase, [])
+        for sterm in syns:
+            base2 = re.sub(r'\s+', ' ', (sterm + ' ' + ' '.join(context_terms)).strip())
+            for domain in SHOP_DOMAINS:
+                _append(f"{base2} site:{domain} {SHOP_REGION}")
+                if len(queries) >= 10:
+                    return
+        # brand-prefixed variants (brand name token + base)
+        for brand_domain in SHOP_BRANDS:
+            brand_name = brand_domain.split('.')[0]
+            bp = re.sub(r'\s+', ' ', (brand_name + ' ' + base).strip())
+            _append(f"{bp} site:{brand_domain} {SHOP_REGION}")
+            if len(queries) >= 10:
+                return
+
+    # add single-term variants
+    for t in term_list:
+        add_variants(t)
+        if len(queries) >= 10:
+            break
+
+    # two-term combos for more specific queries
+    if len(term_list) >= 2 and len(queries) < 10:
+        combos = []
+        for i in range(len(term_list)):
+            for j in range(i + 1, len(term_list)):
+                combos.append((term_list[i], term_list[j]))
+                if len(combos) >= 12:
+                    break
             if len(combos) >= 12:
                 break
-        if len(combos) >= 12:
-            break
-
-    # Build final query strings, add context and site: for each domain
-    # Also ensure single-term queries for tokens are present (so colors/items appear)
-    # prefer marketplaces first for single-term queries
-    for t in term_list:
-        base = ' '.join([t] + context_terms)
-        base = re.sub(r'\s+', ' ', base).strip()
-        if not base:
-            continue
-        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
-            q = f"{base} site:{domain} {SHOP_REGION}"
-            queries.append(q)
+        for a, b in combos:
+            add_variants(f"{a} {b}")
             if len(queries) >= 10:
                 break
-        if len(queries) >= 10:
-            break
 
-    for combo in combos[:5]:
-        base = ' '.join(combo + context_terms)
-        base = re.sub(r'\s+', ' ', base).strip()
-        if not base:
-            continue
-        # add site variants, marketplaces first
-        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
-            q = f"{base} site:{domain} {SHOP_REGION}"
-            queries.append(q)
-            if len(queries) >= 10:
-                break
-        if len(queries) >= 10:
-            break
-
-    # also include original suggestion phrases (to preserve multi-token phrases like '白色 素T')
+    # include original suggestion phrases (preserve multi-token suggestions)
     for s in suggestions:
-        s = s.strip()
         if not s:
             continue
-        base = ' '.join([s] + context_terms)
-        base = re.sub(r'\s+', ' ', base).strip()
-        for domain in SHOP_MARKETPLACES + SHOP_BRANDS:
-            q = f"{base} site:{domain} {SHOP_REGION}"
-            queries.append(q)
-            if len(queries) >= 10:
-                break
+        add_variants(s)
         if len(queries) >= 10:
             break
 
-    # fallback: if no queries, use plain context
+    # fallback: if still empty, use plain context + some domains
     if not queries:
         for domain in SHOP_DOMAINS:
-            queries.append(f"{purpose} {scene} site:{domain} {SHOP_REGION}")
+            _append(f"{purpose} {scene} site:{domain} {SHOP_REGION}")
             if len(queries) >= 5:
                 break
 
@@ -172,7 +203,9 @@ def build_queries_from_suggestions(suggestions: List[str], scene: str, purpose: 
         if q not in seen:
             seen.add(q)
             out.append(q)
-    return out[:10]
+        if len(out) >= 10:
+            break
+    return out
 
 
 PRICE_RE = re.compile(r'(NT\$|NT\s*|\$|＄)\s*([0-9]{1,3}(?:[,，][0-9]{3})*(?:\.[0-9]+)?)', re.I)
