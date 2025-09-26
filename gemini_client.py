@@ -643,3 +643,56 @@ def _fallback_outfit_json(reason: str) -> dict:
         'summary': f'分析失敗: {reason}',
         'suggestions': ['', '', '']
     }
+
+
+def probe_model_availability(model_name: str, timeout: float = 5.0) -> tuple:
+    """
+    Probe whether a given Gemini model name is available/accessible with the
+    configured API key. Returns (available: bool, reason: str).
+
+    This uses a lightweight generate_content call with a tiny payload and a
+    short timeout to distinguish NotFound / permission errors from other
+    problems. It is non-destructive and safe to run at startup or on-demand.
+    """
+    if not _get_api_key() or not genai:
+        return False, 'GENAI_API_KEY not set or genai not available'
+
+    _ensure_configured()
+
+    GM = getattr(genai, 'GenerativeModel', None)
+    if GM is None:
+        return False, 'GenerativeModel API not available in this SDK'
+
+    # try constructing model instance in a safe manner
+    try:
+        for kwargs in ({'model': model_name}, {'name': model_name}, {}):
+            try:
+                model = GM(**kwargs) if kwargs else GM()
+                break
+            except TypeError:
+                continue
+        else:
+            model = GM()
+    except Exception as e:
+        return False, f'failed to construct GenerativeModel: {e}'
+
+    # Minimal candidate: a trivial text-only content shape to elicit immediate
+    # NotFound/permission responses without sending large payloads.
+    tiny_candidate = {'parts': [{'text': 'probe'}]}
+
+    try:
+        # Use short timeout to keep probe responsive.
+        resp = _call_with_retries(
+            lambda: model.generate_content(tiny_candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout}),
+            retries=1, timeout=timeout
+        )
+        # if we got here, model answered something -> consider available
+        return True, 'ok'
+    except Exception as e:
+        msg = str(e)
+        if 'was not found' in msg or 'not found or your project does not have access' in msg or 'Publisher Model' in msg:
+            return False, 'model not found or not accessible: ' + msg
+        if 'Permission' in msg or 'permission' in msg or 'permissionDenied' in msg:
+            return False, 'permission denied: ' + msg
+        # other errors
+        return False, msg
