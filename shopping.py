@@ -43,7 +43,7 @@ _ddg_disabled_until = 0.0
 
 # reduce noisy logs from duckduckgo_search internals
 try:
-    logging.getLogger('duckduckgo_search.utils').setLevel(logging.ERROR)
+    logging.getLogger('duckduckgo_search.utils').setLevel(logging.CRITICAL)
 except Exception:
     pass
 
@@ -269,6 +269,11 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
                 except Exception as e:
                     # duckduckgo_search internals sometimes fail to extract vqd; retry with backoff
                     last_exc = e
+                    # on first error, set a very short cooldown to avoid immediate repeated attempts
+                    tnow = time.time()
+                    if _ddg_failure_count == 0 and _ddg_disabled_until < tnow:
+                        # short immediate cooldown (30s) to reduce log spam
+                        _ddg_disabled_until = tnow + 30
                     # increment failure counter (windowed)
                     tnow = time.time()
                     if _ddg_failure_window_start == 0.0 or tnow - _ddg_failure_window_start > 60:
