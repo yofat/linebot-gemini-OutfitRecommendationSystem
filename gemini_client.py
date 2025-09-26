@@ -16,6 +16,63 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+# In-memory cooldowns to avoid repeatedly probing/using models that returned quota 429.
+_model_cooldowns = {}
+_model_cooldowns_lock = None
+try:
+    import threading as _threading
+    _model_cooldowns_lock = _threading.Lock()
+except Exception:
+    _model_cooldowns_lock = None
+
+
+def _set_model_cooldown(model_name: str, seconds: float):
+    """Set a cooldown (unix timestamp) for a model guarded by a lock."""
+    import time
+    if _model_cooldowns_lock:
+        with _model_cooldowns_lock:
+            _model_cooldowns[model_name] = time.time() + max(0, float(seconds))
+    else:
+        _model_cooldowns[model_name] = time.time() + max(0, float(seconds))
+
+
+def _is_model_in_cooldown(model_name: str) -> bool:
+    import time
+    if _model_cooldowns_lock:
+        with _model_cooldowns_lock:
+            exp = _model_cooldowns.get(model_name)
+    else:
+        exp = _model_cooldowns.get(model_name)
+    if not exp:
+        return False
+    return time.time() < exp
+
+
+def _extract_retry_seconds_from_msg(msg: str) -> Optional[float]:
+    """Try to extract retry delay seconds from quota 429 messages.
+
+    Supports messages containing 'Please retry in 29.45s' and the longer
+    'retry_delay { seconds: 29 }' proto-like blocks.
+    """
+    import re
+    if not msg:
+        return None
+    # try 'Please retry in 29.456s' pattern
+    m = re.search(r'Please retry in\s*(\d+(?:\.\d+)?)s', msg)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    # try proto-like retry_delay { seconds: 29 }
+    m2 = re.search(r'retry_delay\s*\{[^}]*seconds:\s*(\d+)', msg)
+    if m2:
+        try:
+            return float(m2.group(1))
+        except Exception:
+            pass
+    return None
+
 
 def _get_api_key() -> Optional[str]:
     return os.getenv('GENAI_API_KEY')
@@ -734,6 +791,14 @@ def probe_model_availability(model_name: str, timeout: float = 5.0) -> tuple:
         return True, 'ok'
     except Exception as e:
         msg = str(e)
+        # handle quota 429 messages by extracting retry_delay and setting cooldown
+        if 'quota' in msg.lower() or 'exceeded' in msg.lower() or '429' in msg:
+            retry_secs = _extract_retry_seconds_from_msg(msg) or 30.0
+            try:
+                _set_model_cooldown(model_name, retry_secs)
+            except Exception:
+                pass
+            return False, f'quota_exceeded, retry after {retry_secs}s: {msg}'
         if 'was not found' in msg or 'not found or your project does not have access' in msg or 'Publisher Model' in msg:
             return False, 'model not found or not accessible: ' + msg
         if 'Permission' in msg or 'permission' in msg or 'permissionDenied' in msg:
