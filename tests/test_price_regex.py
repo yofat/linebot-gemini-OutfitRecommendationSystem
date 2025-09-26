@@ -1,4 +1,4 @@
-from shopping import extract_price
+from price_utils import extract_price
 
 
 def test_price_variants():

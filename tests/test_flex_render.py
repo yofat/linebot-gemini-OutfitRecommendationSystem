@@ -1,4 +1,4 @@
-from shopping import format_for_flex
+from utils_flex import format_for_flex
 
 
 def test_flex_structure():
