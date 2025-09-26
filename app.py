@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 import json
+import re
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -214,10 +215,15 @@ def debug_shop_test():
     GET: return form
     POST: run shopping.build_queries_from_suggestions + search_products and return JSON + Flex JSON
     """
+    # use Rakuten-based shopping pipeline
     try:
-        from shopping import build_queries_from_suggestions, search_products, format_for_flex, SHOP_MAX_RESULTS, SHOP_CURRENCY
+        from shopping_queries import build_queries
+        from shopping_rakuten import search_items
+        from utils_flex import flex_rakuten_carousel
+        from shopping import SHOP_CURRENCY
+        SHOP_MAX_RESULTS = int(os.getenv('RAKUTEN_MAX_RESULTS', '8'))
     except Exception:
-        return 'shopping module not available', 500
+        return 'rakuten shopping modules not available', 500
 
     if request.method == 'GET':
         html = '''
@@ -247,9 +253,87 @@ def debug_shop_test():
         max_results = SHOP_MAX_RESULTS
 
     suggestions = [s.strip() for s in suggestions_raw.splitlines() if s.strip()]
-    queries = build_queries_from_suggestions(suggestions, scene, purpose, time_weather)
-    products = search_products(queries, max_results=max_results)
-    flex = format_for_flex(products, currency=SHOP_CURRENCY)
+    # accept optional gender and preferences fields
+    gender = request.form.get('gender', '')
+    prefs_raw = request.form.get('preferences', '')
+    preferences = [p.strip() for p in re.split(r'[，,;；\s]+', prefs_raw) if p.strip()]
+
+    # build JP queries using shopping_queries.build_queries
+    queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
+
+    # call Rakuten search per query and aggregate up to max_results
+    products = []
+    for q in queries:
+        try:
+            items = search_items(q, max_results=max_results, qps=float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1')))
+        except Exception:
+            items = []
+        for it in items:
+            if len(products) >= max_results:
+                break
+            products.append(it)
+        if len(products) >= max_results:
+            break
+
+    flex = flex_rakuten_carousel(products)
+    out = {'queries': queries, 'products': products, 'flex': flex}
+    return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
+
+
+@app.route('/_debug/shop_run_json', methods=['POST'])
+def debug_shop_run_json():
+    """Accept a Gemini-like JSON payload and run the Rakuten pipeline.
+    Expected JSON body keys: suggestions (list of strings) OR suggestions_text (newline-separated string),
+    optional: gender (str), preferences (list or string).
+    Returns: { queries, products, flex }
+    """
+    try:
+        payload = request.get_json(force=True)
+    except Exception:
+        return 'invalid json', 400
+
+    if not payload:
+        return 'empty json', 400
+
+    suggestions = payload.get('suggestions')
+    if suggestions is None:
+        stxt = payload.get('suggestions_text', '') or ''
+        suggestions = [s.strip() for s in stxt.splitlines() if s.strip()]
+
+    if not isinstance(suggestions, list):
+        return 'suggestions must be a list', 400
+
+    gender = payload.get('gender', '')
+    prefs = payload.get('preferences', [])
+    if isinstance(prefs, str):
+        import re as _re
+        prefs = [p.strip() for p in _re.split(r'[，,;；\s]+', prefs) if p.strip()]
+
+    # build queries and call Rakuten search
+    try:
+        from shopping_queries import build_queries
+        from shopping_rakuten import search_items
+        from utils_flex import flex_rakuten_carousel
+    except Exception:
+        return 'rakuten modules unavailable', 500
+
+    queries = build_queries(suggestions, payload.get('scene', ''), payload.get('purpose', ''), time_weather=payload.get('time_weather',''), gender=gender, preferences=prefs)
+    max_results = int(payload.get('max_results', os.getenv('RAKUTEN_MAX_RESULTS', '8')))
+
+    products = []
+    for q in queries:
+        try:
+            items = search_items(q, max_results=max_results, qps=float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1')))
+        except Exception:
+            items = []
+        for it in items:
+            if len(products) >= max_results:
+                break
+            products.append(it)
+        if len(products) >= max_results:
+            break
+
+    flex = flex_rakuten_carousel(products)
     out = {'queries': queries, 'products': products, 'flex': flex}
     return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
