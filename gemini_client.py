@@ -388,12 +388,15 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             if env_candidates:
                 model_names = [m.strip() for m in env_candidates.split(',') if m.strip()]
             else:
-                # reasonable defaults; adjust as SDK/model availability changes
+                # reasonable defaults based on official stable models (2025):
+                # prefer Gemini 2.5 family then fall back to older 1.x names
                 model_names = [
+                    'gemini-2.5-flash',
+                    'gemini-2.5-pro',
+                    'gemini-2.5-flash-lite',
+                    'gemini-2.0-flash-001',
                     'gemini-1.5-flash',
-                    'gemini-1.5-flash-002',
                     'gemini-1.5',
-                    'gemini-1.0',
                 ]
 
             last_exc = None
