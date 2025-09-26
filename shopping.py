@@ -203,35 +203,76 @@ def search_products(queries: List[str], max_results: int = None) -> List[Dict[st
             delay = random.uniform(0.6, 1.0)
             time.sleep(delay)
             hits = []
-            try:
-                ddg_hits = ddg(q, region=SHOP_REGION, safesearch='Off', max_results=8)
-                for r in ddg_hits:
-                    # ddg returns keys like 'title' and 'href'
-                    title = r.get('title') or ''
-                    url = r.get('href') or r.get('url') or ''
-                    if not url:
-                        continue
-                    parsed = urllib.parse.urlparse(url)
-                    domain = parsed.netloc.lower()
-                    # domain filter: allow if any whitelist domain is substring
-                    allowed = any(d in domain for d in SHOP_DOMAINS)
-                    if not allowed:
-                        continue
-                    price = extract_price(title) or extract_price(r.get('body', '') or '')
-                    hit = {
-                        'title': title,
-                        'url': url,
-                        'source': domain,
-                        'price_text': price[0] if price else None,
-                        'price_value': price[1] if price else None,
-                        'query': q,
-                    }
-                    hits.append(hit)
-            except Exception:
-                hits = []
-            except Exception:
-                hits = []
-            _cache_set(ck, hits)
+            # try ddg with a couple retries/backoff to handle transient parser failures in ddg utils
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    ddg_hits = ddg(q, region=SHOP_REGION, safesearch='Off', max_results=8)
+                    if not ddg_hits:
+                        # empty result set
+                        hits = []
+                    else:
+                        for r in ddg_hits:
+                            title = r.get('title') or ''
+                            url = r.get('href') or r.get('url') or ''
+                            if not url:
+                                continue
+                            parsed = urllib.parse.urlparse(url)
+                            domain = parsed.netloc.lower()
+                            # domain filter: allow if any whitelist domain is substring
+                            allowed = any(d in domain for d in SHOP_DOMAINS)
+                            if not allowed:
+                                continue
+                            price = extract_price(title) or extract_price(r.get('body', '') or '')
+                            hit = {
+                                'title': title,
+                                'url': url,
+                                'source': domain,
+                                'price_text': price[0] if price else None,
+                                'price_value': price[1] if price else None,
+                                'query': q,
+                            }
+                            hits.append(hit)
+                    last_exc = None
+                    break
+                except Exception as e:
+                    # duckduckgo_search internals sometimes fail to extract vqd; retry with backoff
+                    last_exc = e
+                    backoff = 0.4 * (2 ** attempt)
+                    time.sleep(backoff)
+            if last_exc is not None and not hits:
+                # final fallback: try a simplified query without site: filters once
+                try:
+                    simple_q = re.sub(r"\s+site:[^\s]+", '', q)
+                    simple_q = simple_q.replace(SHOP_REGION, '').strip()
+                    ddg_hits = ddg(simple_q, region=SHOP_REGION, safesearch='Off', max_results=8)
+                    for r in (ddg_hits or []):
+                        title = r.get('title') or ''
+                        url = r.get('href') or r.get('url') or ''
+                        if not url:
+                            continue
+                        parsed = urllib.parse.urlparse(url)
+                        domain = parsed.netloc.lower()
+                        allowed = any(d in domain for d in SHOP_DOMAINS)
+                        if not allowed:
+                            continue
+                        price = extract_price(title) or extract_price(r.get('body', '') or '')
+                        hit = {
+                            'title': title,
+                            'url': url,
+                            'source': domain,
+                            'price_text': price[0] if price else None,
+                            'price_value': price[1] if price else None,
+                            'query': simple_q,
+                        }
+                        hits.append(hit)
+                except Exception:
+                    # completely give up for this query; negative-cache for short time to avoid log spam
+                    _cache_set(ck, [], ttl=60)
+                    hits = []
+            else:
+                # normal cache set for successful or empty result
+                _cache_set(ck, hits)
         # append hits, dedupe
         for h in hits:
             nu = _normalize_url(h['url'])
