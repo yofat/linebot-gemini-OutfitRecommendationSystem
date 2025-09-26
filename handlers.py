@@ -443,9 +443,21 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             st = get_state(user_id) or {}
             ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
             ctx['time_weather'] = text
-            # set final phase and stage and expiry
-            set_state(user_id, phase='WAIT_IMAGE', stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
+            # advance to Q4 to collect gender and preferences
+            set_state(user_id, phase='Q4', stage='ASK_PREFERENCES', context=ctx)
+            # ask gender first with quick replies
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='男性', data='q4_gender=男性')),
+                QuickReplyButton(action=PostbackAction(label='女性', data='q4_gender=女性')),
+                QuickReplyButton(action=PostbackAction(label='不公開', data='q4_gender=不公開')),
+            ])
+            msg = TextSendMessage(text='請問你的性別或偏好族群（例如：男性/女性/不公開），或直接輸入；接著會詢問衣著偏好（例如：合身、蕾絲、一件式洋裝）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
+            return
             return
         if phase == 'WAIT_IMAGE':
             # allow user to restart flow by sending 'restart'
@@ -695,6 +707,34 @@ def register_handlers(line_bot_api: LineBotApi, handler):
         if data.startswith('q3='):
             ctx['time_weather'] = data.split('=', 1)[1]
             set_state(user_id, stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
+            return
+        if data.startswith('q4_gender='):
+            # store gender and ask for preferences
+            ctx['gender'] = data.split('=', 1)[1]
+            set_state(user_id, stage='ASK_PREFERENCES', context=ctx)
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='合身', data='q4_pref=合身')),
+                QuickReplyButton(action=PostbackAction(label='寬鬆', data='q4_pref=寬鬆')),
+                QuickReplyButton(action=PostbackAction(label='蕾絲', data='q4_pref=蕾絲')),
+                QuickReplyButton(action=PostbackAction(label='一件式洋裝', data='q4_pref=一件式洋裝')),
+            ])
+            msg = TextSendMessage(text='請輸入你偏好的款式或材質（可多個，用空白或逗號分隔），或選擇下列常見選項')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
+            return
+        if data.startswith('q4_pref='):
+            # add a single preference from postback and move to WAIT_IMAGE
+            pref = data.split('=', 1)[1]
+            prev_prefs = ctx.get('preferences', []) or []
+            if pref not in prev_prefs:
+                prev_prefs.append(pref)
+            ctx['preferences'] = prev_prefs
+            # now set WAIT_IMAGE
+            set_state(user_id, phase='WAIT_IMAGE', stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
             return
         # shopping action trigger (quick-reply)
