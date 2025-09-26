@@ -227,6 +227,35 @@ pytest -q
 ---
 
 感謝使用，若需要我幫你把 `Pillow` 寫入 `requirements.txt` 並新增剛才的 `scripts/test_analyze_image.py`，我可以直接幫你修改並 push。
+## 限額 (Quota) 與常見問題處理
+
+如果你在生產環境遇到 `429 quota_exceeded`，或在 probe 時看到 `available: false` 並包含 `retry_delay`：表示目前專案在該 model 的免費配額或每分鐘配額已被耗盡。以下為快速處理步驟：
+
+- 短期（幾十秒內）重試：Probe 回傳會包含 `retry_delay`（秒數），可等候該秒數後再呼叫 `/_debug/genai_caps?probe=1` 檢查是否回復。程式已實作 in-memory cooldown，會在收到 429 時暫時把該 model 標記為冷卻以避免短時間內重試造成更多 429。
+- 臨時降低消耗：在部署上設 `DISABLE_IMAGE_ANALYZE=1`，或暫時把 `GEMINI_MODEL_CANDIDATES` 設為只包含你確定有額度且能使用的 model，減少多模態呼叫。
+- 永久解法（建議）：到 Google Cloud Console → IAM & Admin / Quotas，找到與 `generativelanguage.googleapis.com` 或 `GenerateContent` 相關的 quota 條目，按需申請提高配額或啟用付費方案（Billing）。
+
+### 在 GCP Console 申請提高配額（步驟摘要）
+
+1. 登入 Google Cloud Console，選擇你專案（右上角專案選單）。
+2. 左側選單搜尋 "Quotas" 並進入 Quotas 頁面。
+3. 在搜尋欄輸入 `generativelanguage` 或 `model : gemini-2.5`（或你要使用的 model 關鍵字），過濾出相關的 quota 條目（例如 `GenerateContent input token count limit` / `GenerateContent free tier requests`）。
+4. 勾選你要調整的 quota 條目，然後按上方的 "EDIT QUOTAS"（或 "REQUEST QUOTA INCREASE"）按鈕，填寫表單。通常需填寫預期流量、使用原因及聯絡資訊。
+5. 等待 Google 審核，審核通過後配額會自動更新，然後你再回到部署環境做一次 probe 確認。
+
+### 權限與 404（model not found）問題處理
+
+- 若 probe 顯示 `404 model not found or not accessible`：代表該 model 或特定版本在你的專案尚未可用，或服務帳戶沒有存取該 model 的權限。請檢查：
+   - 你使用的 model 名稱是否與 Console 中的 exact model id 匹配（例如 `gemini-2.5-flash-preview-image`）。
+   - 確認專案是否已啟用 Generative AI / Generative Language API，且服務帳戶具備所需 IAM 權限（例如 `roles/aiplatform.user` 或文件上推薦的 role）。
+
+### 建議的現場緊急流程
+
+1. 觀察 probe 回傳的 `retry_delay`（秒）：若為短時間（例如 30~120s），等候後重試。
+2. 若常態性 429：在 Render 設 `DISABLE_IMAGE_ANALYZE=1` 來暫停圖片流程，維持服務的文字回覆功能。
+3. 同時在 GCP Console 申請提高 quota 或切換到付費 tier，或考慮使用不同專案分散流量（每個專案有獨立 quota）。
+
+如果需要，我可以把上述步驟寫成一份更完整的操作手冊或一鍵 probe 腳本（例如 `scripts/check_models.py --probe`），供你在本機或 CI/CD 使用。
 ## 3. 快速啟動 & 環境變數
 
 建議使用 Python 3.11+。
