@@ -2,6 +2,9 @@
 
 這個專案是一個 LINE Bot 範例，示範如何把使用者的文字描述與上傳的圖片送到 Google Generative AI (Gemini) 做穿搭分析，並回覆結果。以下為快速開始步驟（把使用說明放在最前面，方便開發與部署）：
 
+注意：本專案的隱私與學術聲明已另存於 `PRIVACY.md`（包含 Rakuten Ichiba API 使用說明、速率限制與不儲存個資的承諾），請參閱：
+`PRIVACY.md`（檔案位於本專案根目錄）或線上檢視：https://github.com/yofat/linebot-gemini-OutfitRecommendationSystem/blob/main/PRIVACY.md
+
 1. 建立並啟用虛擬環境：
 1. 專案的使用方式
 
@@ -73,9 +76,6 @@
 此專案為一個以 Flask + LINE webhook 為基礎的示範後端，展示如何把使用者文字描述與上傳圖片送到 Google Generative AI（Gemini）做穿搭評分，並以 Flex 或文字回覆。
 
 本次 README 已補充圖片（多模態）在 Free-tier 下的使用說明、停用開關（DISABLE_IMAGE_ANALYZE）、以及 debug endpoints 與本地/Render 測試步驟。
-
-注意：本專案的隱私與學術聲明已另存於 `PRIVACY.md`（包含 Rakuten Ichiba API 使用說明、速率限制與不儲存個資的承諾），請參閱：
-`PRIVACY.md`（檔案位於本專案根目錄）或線上檢視：https://github.com/yofat/linebot-gemini-OutfitRecommendationSystem/blob/main/PRIVACY.md
 
 重點摘要
 - Python 3.11+
