@@ -137,6 +137,32 @@ def _debug_genai_caps():
         }
     except Exception as e:
         caps = {'module_loaded': False, 'error': str(e)}
+
+    # If the caller explicitly requests probing (slow, network calls), perform a lightweight probe
+    probe_param = request.args.get('probe', '').lower()
+    if probe_param in ('1', 'true', 'yes'):
+        try:
+            from gemini_client import probe_model_availability
+            env = os.getenv('GEMINI_MODEL_CANDIDATES', '')
+            if env:
+                model_names = [m.strip() for m in env.split(',') if m.strip()]
+            else:
+                model_names = [
+                    'gemini-2.5-flash',
+                    'gemini-2.5-pro',
+                    'gemini-2.5-flash-lite',
+                    'gemini-2.0-flash-001',
+                    'gemini-1.5-flash',
+                    'gemini-1.5',
+                ]
+            probe_results = {}
+            for m in model_names:
+                ok, reason = probe_model_availability(m, timeout=6.0)
+                probe_results[m] = {'available': bool(ok), 'reason': reason}
+            caps['probe'] = probe_results
+        except Exception as e:
+            caps['probe_error'] = str(e)
+
     return caps, 200
 
 
