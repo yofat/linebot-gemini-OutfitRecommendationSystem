@@ -283,20 +283,18 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                     pass
         except Exception:
             pass
-        # Newer SDK shape: Content with 'parts' where each Part has either 'text' or 'inline_data'
+        # Newer SDK shape: single Content with 'parts' where each Part is either
+        # {'text': '<...>'} or {'inline_data': {...}}. Build a combined candidate
+        # with both parts and prefer it early.
         try:
-            # Some newer SDK variants expect a Content with 'parts' where each
-            # Part is either {'text': '<...>'} or {'inline_data': {...}}.
-            # Avoid adding a 'role' sibling on the same dict as 'text' which
-            # some versions treat as an unknown key list ['text','role'].
             prompt_str = prompt + '\n' + context_text
-            content_shape = [
-                {'parts': [{'text': prompt_str}]},
-                {'parts': [{'inline_data': {'mime_type': mime, 'data': image_bytes}}]}
-            ]
-            candidates.append(content_shape)
+            combined = {'parts': [
+                {'text': prompt_str},
+                {'inline_data': {'mime_type': mime, 'data': image_bytes}}
+            ]}
+            # prefer combined dict early
+            candidates.insert(0, combined)
         except Exception:
-            # If prompt/mime/image_bytes are not available for some reason, skip
             pass
         # Original shape used in this project: [{'type':'input_text','text':...}, {'mime_type':..., 'data': ...}]
         candidates.append(parts)
@@ -394,8 +392,8 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             # aggressive sanitized candidate (strip 'type' keys) as higher priority when unknown-field errors occur
             sanitized = _strip_type_keys(parts)
             if sanitized not in tried_candidates:
-                # put sanitized candidate first so SDK/KeyError from 'type' keys is avoided early
-                tried_candidates.insert(0, sanitized)
+                # put sanitized candidate last as an aggressive fallback
+                tried_candidates.append(sanitized)
 
             for candidate in tried_candidates:
                 try:
