@@ -382,11 +382,19 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
     try:
         # Prefer GenerativeModel API if available
         if hasattr(genai, 'GenerativeModel'):
-            model = _create_generative_model('gemini-1.5-flash')
-            if model is None:
-                raise GeminiAPIError('Unable to instantiate GenerativeModel with this google.generativeai version')
+            # allow overriding model list via env e.g. GEMINI_MODEL_CANDIDATES='gemini-1.5-flash,gemini-1.5'
+            env_candidates = os.getenv('GEMINI_MODEL_CANDIDATES', '')
+            if env_candidates:
+                model_names = [m.strip() for m in env_candidates.split(',') if m.strip()]
+            else:
+                # reasonable defaults; adjust as SDK/model availability changes
+                model_names = [
+                    'gemini-1.5-flash',
+                    'gemini-1.5-flash-002',
+                    'gemini-1.5',
+                    'gemini-1.0',
+                ]
 
-            # Try multiple candidate parts shapes until one works
             last_exc = None
             tried_candidates = list(_normalize_parts_for_sdk(parts))
             # aggressive sanitized candidate (strip 'type' keys) as higher priority when unknown-field errors occur
@@ -395,96 +403,119 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                 # put sanitized candidate last as an aggressive fallback
                 tried_candidates.append(sanitized)
 
-            for candidate in tried_candidates:
+            # Try each model name in turn; if a model is not available (NotFound),
+            # try the next. For each model, try the candidate list until one works.
+            for model_name in model_names:
                 try:
-                    # Log a safe summary of the candidate to help diagnose schema errors
-                    def _candidate_summary(cand):
-                        try:
-                            import copy
-                            def _summ(o):
-                                if isinstance(o, dict):
-                                    keys = sorted(list(o.keys()))
-                                    # hide large binary fields
-                                    if 'data' in o and isinstance(o.get('data'), (bytes, bytearray)):
-                                        return { 'keys': keys, 'data': '<bytes>' }
-                                    # show nested summaries for small dicts
-                                    summary = { 'keys': keys }
-                                    return summary
-                                if isinstance(o, list):
-                                    return [_summ(i) for i in o]
-                                # for other objects show the class name
-                                return type(o).__name__
-                            return _summ(cand)
-                        except Exception:
-                            try:
-                                return str(type(cand))
-                            except Exception:
-                                return '<unknown>'
-
-                    try:
-                        logger.debug('Attempting model.generate_content with candidate summary: %s', _candidate_summary(candidate))
-                    except Exception:
-                        pass
-                    # generate_content may accept parts and request_options
-                    resp = model.generate_content(candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
-                    last_exc = None
-                    break
-                except TypeError as te:
-                    # signature mismatch; try next
-                    last_exc = te
+                    model = _create_generative_model(model_name)
+                except Exception:
+                    model = None
+                if model is None:
+                    logger.debug('GenerativeModel not constructible for model name: %s', model_name)
                     continue
-                except Exception as e:
-                    # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
-                    msg = str(e)
-                    # If the SDK reports that the provided dict has unexpected keys
-                    # (e.g. "provided dictionary has the following keys: ['type','text']"),
-                    # treat it as a schema mismatch and try the next candidate.
-                    if 'provided dictionary has the following keys' in msg or 'provided dictionary has the following keys:' in msg or 'following keys' in msg:
-                        last_exc = e
-                        continue
-                    # If the SDK reports an invalid role, attempt to sanitize
-                    # any 'role' keys in dict/list candidates and retry once.
-                    if 'Please use a valid role' in msg or 'valid role' in msg:
-                        try:
-                            def _sanitize_roles(o):
-                                # recursively copy and sanitize any 'role' values
+                for candidate in tried_candidates:
+                    try:
+                        # Log a safe summary of the candidate to help diagnose schema errors
+                        def _candidate_summary(cand):
+                            try:
                                 import copy
-                                if isinstance(o, dict):
-                                    new = {}
-                                    for k, v in o.items():
-                                        if k == 'role':
-                                            if v not in ('user', 'model'):
-                                                new[k] = 'user'
-                                            else:
-                                                new[k] = v
-                                        else:
-                                            new[k] = _sanitize_roles(v)
-                                    return new
-                                if isinstance(o, list):
-                                    return [_sanitize_roles(i) for i in o]
-                                return copy.copy(o)
-
-                            # only try sanitizing for dict/list shaped candidates
-                            if isinstance(candidate, (dict, list)):
-                                sanitized_candidate = _sanitize_roles(candidate)
-                                logger.warning('Sanitizing candidate roles and retrying to avoid invalid role error')
+                                def _summ(o):
+                                    if isinstance(o, dict):
+                                        keys = sorted(list(o.keys()))
+                                        # hide large binary fields
+                                        if 'data' in o and isinstance(o.get('data'), (bytes, bytearray)):
+                                            return {'keys': keys, 'data': '<bytes>'}
+                                        # show nested summaries for small dicts
+                                        summary = {'keys': keys}
+                                        return summary
+                                    if isinstance(o, list):
+                                        return [_summ(i) for i in o]
+                                    # for other objects show the class name
+                                    return type(o).__name__
+                                return _summ(cand)
+                            except Exception:
                                 try:
-                                    resp = model.generate_content(sanitized_candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
-                                    last_exc = None
-                                    break
-                                except Exception as e2:
-                                    # if retry fails, record and continue with other candidates
-                                    last_exc = e2
-                                    continue
+                                    return str(type(cand))
+                                except Exception:
+                                    return '<unknown>'
+
+                        try:
+                            logger.debug('Attempting model.generate_content with candidate summary: %s', _candidate_summary(candidate))
                         except Exception:
-                            # fallback to normal handling below
                             pass
-                    if 'Unknown field for Part' in msg or 'Unknown field' in msg or 'Invalid Part' in msg:
-                        # if unknown field, try sanitized candidate next
-                        last_exc = e
+
+                        # generate_content may accept parts and request_options
+                        resp = model.generate_content(candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+                        last_exc = None
+                        break
+                    except TypeError as te:
+                        # signature mismatch; try next candidate
+                        last_exc = te
                         continue
-                    # otherwise surface the error
-                    raise
+                    except Exception as e:
+                        # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
+                        msg = str(e)
+                        # If the model itself is not found or not accessible, try next
+                        if 'was not found' in msg or 'not found or your project does not have access' in msg or 'Publisher Model' in msg:
+                            logger.warning('Model %s not available: %s', model_name, msg)
+                            last_exc = e
+                            # break out of candidate loop and try next model_name
+                            break
+                        # If the SDK reports that the provided dict has unexpected keys
+                        # (e.g. "provided dictionary has the following keys: ['type','text']"),
+                        # treat it as a schema mismatch and try the next candidate.
+                        if 'provided dictionary has the following keys' in msg or 'provided dictionary has the following keys:' in msg or 'following keys' in msg:
+                            last_exc = e
+                            continue
+                        # If the SDK reports an invalid role, attempt to sanitize
+                        # any 'role' keys in dict/list candidates and retry once.
+                        if 'Please use a valid role' in msg or 'valid role' in msg:
+                            try:
+                                def _sanitize_roles(o):
+                                    # recursively copy and sanitize any 'role' values
+                                    import copy
+                                    if isinstance(o, dict):
+                                        new = {}
+                                        for k, v in o.items():
+                                            if k == 'role':
+                                                if v not in ('user', 'model'):
+                                                    new[k] = 'user'
+                                                else:
+                                                    new[k] = v
+                                            else:
+                                                new[k] = _sanitize_roles(v)
+                                        return new
+                                    if isinstance(o, list):
+                                        return [_sanitize_roles(i) for i in o]
+                                    return copy.copy(o)
+
+                                # only try sanitizing for dict/list shaped candidates
+                                if isinstance(candidate, (dict, list)):
+                                    sanitized_candidate = _sanitize_roles(candidate)
+                                    logger.warning('Sanitizing candidate roles and retrying to avoid invalid role error')
+                                    try:
+                                        resp = model.generate_content(sanitized_candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+                                        last_exc = None
+                                        break
+                                    except Exception as e2:
+                                        # if retry fails, record and continue with other candidates
+                                        last_exc = e2
+                                        continue
+                            except Exception:
+                                # fallback to normal handling below
+                                pass
+                        if 'Unknown field for Part' in msg or 'Unknown field' in msg or 'Invalid Part' in msg:
+                            # if unknown field, try sanitized candidate next
+                            last_exc = e
+                            continue
+                        # otherwise surface the error
+                        raise
+                # end of per-model candidate loop
+                if last_exc:
+                    # if we broke due to model not found, continue to next model_name
+                    continue
+            # end of trying model names
+            # if last_exc remains set after trying all models/candidates, handle below
             if last_exc:
                 # If the SDK rejects Part due to unexpected fields (common when
                 # SDK/Proto definitions differ), prefer graceful fallback to
