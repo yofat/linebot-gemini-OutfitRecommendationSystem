@@ -20,11 +20,17 @@ CACHE_TTL_SECONDS = int(os.getenv('SHOP_CACHE_TTL_SEC', str(12 * 3600)))  # defa
 # user explicitly requested the WWW host form
 SHOP_DOMAINS_TW = os.getenv('SHOP_DOMAINS_TW', 'www.lativ.com.tw')
 _all_domains = [d.strip().lower() for d in SHOP_DOMAINS_TW.split(',') if d.strip()]
-# classify into marketplaces (general ecommerce) vs brands
-SHOP_MARKETPLACES = [d for d in _all_domains if any(k in d for k in ('shopee', 'momo', 'pchome', 'yahoo'))]
-SHOP_BRANDS = [d for d in _all_domains if d not in SHOP_MARKETPLACES]
-# prefer brands first (focus on clothing) then marketplaces
-SHOP_DOMAINS = SHOP_BRANDS + SHOP_MARKETPLACES
+# If any lativ domain present, restrict to lativ only (user requested)
+if any('lativ' in d for d in _all_domains):
+    SHOP_DOMAINS = [d for d in _all_domains if 'lativ' in d]
+    SHOP_BRANDS = SHOP_DOMAINS[:]
+    SHOP_MARKETPLACES = []
+else:
+    # classify into marketplaces (general ecommerce) vs brands
+    SHOP_MARKETPLACES = [d for d in _all_domains if any(k in d for k in ('shopee', 'momo', 'pchome', 'yahoo'))]
+    SHOP_BRANDS = [d for d in _all_domains if d not in SHOP_MARKETPLACES]
+    # prefer brands first (focus on clothing) then marketplaces
+    SHOP_DOMAINS = SHOP_BRANDS + SHOP_MARKETPLACES
 
 SHOP_MAX_RESULTS = int(os.getenv('SHOP_MAX_RESULTS', '8'))
 SHOP_REGION = os.getenv('SHOP_REGION', 'tw')
