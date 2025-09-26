@@ -224,11 +224,49 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
     _ensure_configured()
 
     # Build prompt from provided context
-    prompt = (
-        TASK_INSTRUCTION if 'TASK_INSTRUCTION' in globals() else ''
+    base_task = TASK_INSTRUCTION if 'TASK_INSTRUCTION' in globals() else ''
+
+    # Provide an explicit JSON schema and an example to improve deterministic
+    # multimodal responses. Instruct the model to return ONLY the JSON object
+    # that matches the schema (no surrounding text).
+    schema = (
+        "請依據下列 JSON schema 回傳唯一一個 JSON 物件 (只回傳 JSON, 不要任何額外說明):\n"
+        "{\n"
+        "  \"overall_score\": number,\n"
+        "  \"subscores\": {\n"
+        "    \"fit\": number,\n"
+        "    \"color\": number,\n"
+        "    \"occasion\": number,\n"
+        "    \"balance\": number,\n"
+        "    \"shoes_bag\": number,\n"
+        "    \"grooming\": number\n"
+        "  },\n"
+        "  \"summary\": string,\n"
+        "  \"suggestions\": [string, string, string]\n"
+        "}\n"
     )
+
+    example = (
+        "範例輸出 (僅示範格式):\n"
+        "{\n"
+        "  \"overall_score\": 85,\n"
+        "  \"subscores\": {\n"
+        "    \"fit\": 80,\n"
+        "    \"color\": 90,\n"
+        "    \"occasion\": 85,\n"
+        "    \"balance\": 80,\n"
+        "    \"shoes_bag\": 75,\n"
+        "    \"grooming\": 90\n"
+        "  },\n"
+        "  \"summary\": \"整體搭配良好，可增强配件色彩。\",\n"
+        "  \"suggestions\": [\"換一雙淺色鞋\", \"加一件薄外套\", \"髮型可更柔和\"]\n"
+        "}\n"
+    )
+
     # minimal context text
     context_text = f"場景：{scene}\n目的：{purpose}\n時間/天氣：{time_weather}\n"
+    # combine to final prompt used by different candidate builders
+    prompt = base_task + "\n" + schema + "\n" + example + "\n" + context_text
     # Compose parts: first instruction/context, then image part
     parts = [
         {'type': 'input_text', 'text': prompt + '\n' + context_text},
@@ -449,7 +487,13 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                             pass
 
                         # generate_content may accept parts and request_options
-                        resp = model.generate_content(candidate, generation_config={'response_mime_type': 'application/json'}, request_options={'timeout': timeout})
+                        # Provide deterministic generation config where possible.
+                        gen_cfg = {'response_mime_type': 'application/json', 'temperature': 0.0}
+                        try:
+                            resp = model.generate_content(candidate, generation_config=gen_cfg, request_options={'timeout': timeout})
+                        except TypeError:
+                            # older SDK variants might accept generation_config in different shapes
+                            resp = model.generate_content(candidate, request_options={'timeout': timeout})
                         last_exc = None
                         break
                     except TypeError as te:
