@@ -494,22 +494,22 @@ def register_handlers(line_bot_api: LineBotApi, handler):
         try:
             flex_payload = build_flex_payload(overall_int, subs, summary, suggestions)
             flex = FlexSendMessage(alt_text=f'穿搭評分 {overall_int}', contents=flex_payload)
-            line_bot_api.reply_message(event.reply_token, flex)
-            # offer quick-reply to fetch shopping recommendations
+            # prepare reply items; include quick-reply as an additional message so user can opt-in to shopping
+            reply_items = [flex]
             try:
                 if build_queries_from_suggestions is not None:
-                    qr = QuickReply(items=[
-                        QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop')),
-                    ])
-                    msg = TextSendMessage(text='要看推薦單品嗎？',)
+                    qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
+                    qr_msg = TextSendMessage(text='要看推薦單品嗎？')
                     try:
-                        setattr(msg, 'quick_reply', qr)
+                        setattr(qr_msg, 'quick_reply', qr)
                     except Exception:
                         pass
-                    line_bot_api.push_message(user_id, msg)
+                    # append quick-reply as the second message (LINE allows up to 5 in one reply)
+                    reply_items.append(qr_msg)
             except Exception:
-                # non-fatal
+                # non-fatal; continue without quick-reply
                 pass
+            line_bot_api.reply_message(event.reply_token, reply_items)
         except Exception:
             logger.exception('failed to send flex message, fallback to text')
             # fallback to text messages
@@ -522,16 +522,36 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                     line_bot_api.push_message(user_id, m)
             except Exception:
                 logger.exception('failed to send fallback messages')
-            # also offer quick-reply even on fallback text
+            # also offer quick-reply even on fallback text, but include in the same reply to avoid extra push
             try:
                 if build_queries_from_suggestions is not None:
                     qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
-                    m = TextSendMessage(text='要看推薦單品嗎？')
+                    quick_msg = TextSendMessage(text='要看推薦單品嗎？')
                     try:
-                        setattr(m, 'quick_reply', qr)
+                        setattr(quick_msg, 'quick_reply', qr)
                     except Exception:
                         pass
-                    line_bot_api.push_message(user_id, m)
+                    # assemble reply batch with quick_msg while respecting LINE's 5-message reply limit
+                    if len(messages) >= 5:
+                        reply_batch = messages[:4] + [quick_msg]
+                        remaining = messages[4:]
+                    else:
+                        reply_batch = messages[:]
+                        reply_batch.append(quick_msg)
+                        remaining = []
+                    try:
+                        line_bot_api.reply_message(event.reply_token, reply_batch)
+                        for m in remaining:
+                            line_bot_api.push_message(user_id, m)
+                    except Exception:
+                        # if reply fails, fallback to previous behavior
+                        try:
+                            line_bot_api.reply_message(event.reply_token, messages[:5])
+                            for m in messages[5:]:
+                                line_bot_api.push_message(user_id, m)
+                        except Exception:
+                            logger.exception('failed to send fallback messages')
+                    return
             except Exception:
                 pass
 

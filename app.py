@@ -3,6 +3,7 @@ import os
 import logging
 import threading
 import time
+import json
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -205,6 +206,52 @@ def _debug_build_info():
         caps = {'module_loaded': False, 'error': str(e)}
 
     return {'commit': commit, 'genai_caps': caps}, 200
+
+
+@app.route('/_debug/shop_test', methods=['GET', 'POST'])
+def debug_shop_test():
+    """Simple HTML form to test shopping pipeline without calling Gemini.
+    GET: return form
+    POST: run shopping.build_queries_from_suggestions + search_products and return JSON + Flex JSON
+    """
+    try:
+        from shopping import build_queries_from_suggestions, search_products, format_for_flex, SHOP_MAX_RESULTS, SHOP_CURRENCY
+    except Exception:
+        return 'shopping module not available', 500
+
+    if request.method == 'GET':
+        html = '''
+        <html><body>
+        <h3>Shop Test (no Gemini)</h3>
+        <form method="post">
+        Suggestions (one per line):<br>
+        <textarea name="suggestions" rows="6" cols="60">白色 素T\n牛仔褲 直筒\n皮革 樂福鞋</textarea><br>
+        Scene: <input name="scene" value="上班"><br>
+        Purpose: <input name="purpose" value="正式"><br>
+        Time/Weather: <input name="time_weather" value="白天"><br>
+        Max Results: <input name="max_results" value="8"><br>
+        <input type="submit" value="Search">
+        </form>
+        </body></html>
+        '''
+        return html
+
+    # POST
+    suggestions_raw = request.form.get('suggestions', '')
+    scene = request.form.get('scene', '')
+    purpose = request.form.get('purpose', '')
+    time_weather = request.form.get('time_weather', '')
+    try:
+        max_results = int(request.form.get('max_results') or SHOP_MAX_RESULTS)
+    except Exception:
+        max_results = SHOP_MAX_RESULTS
+
+    suggestions = [s.strip() for s in suggestions_raw.splitlines() if s.strip()]
+    queries = build_queries_from_suggestions(suggestions, scene, purpose, time_weather)
+    products = search_products(queries, max_results=max_results)
+    flex = format_for_flex(products, currency=SHOP_CURRENCY)
+    out = {'queries': queries, 'products': products, 'flex': flex}
+    return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
 
 if __name__ == '__main__':
