@@ -148,6 +148,16 @@ def _contains_keyword(token: str, keywords: set[str]) -> bool:
     return False
 
 
+def _contains_chinese(text: str) -> bool:
+    """Check if text contains Chinese characters (not translated properly)."""
+    if not text:
+        return False
+    for char in text:
+        if '\u4e00' <= char <= '\u9fff':  # CJK Unified Ideographs
+            return True
+    return False
+
+
 def _classify_token(token: str) -> str:
     token = token.strip()
     if not token:
@@ -229,6 +239,9 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
     for tok in jp_tokens:
         tok = tok.strip()
         if not tok:
+            continue
+        # Skip tokens that still contain Chinese characters (untranslated)
+        if _contains_chinese(tok):
             continue
         category = _classify_token(tok)
         if category == 'exclude':
