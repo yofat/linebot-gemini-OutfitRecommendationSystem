@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
 import os
+import sys
+
+# CRITICAL: Synchronize GENAI_API_KEY -> GOOGLE_API_KEY as the very first step
+# (before any other imports that might trigger google.auth.default()).
+# Some google client libraries look for GOOGLE_API_KEY in os.environ during
+# module import or client construction, and will fail with DefaultCredentialsError
+# if it's not present. This early sync ensures both env vars are available
+# before any google/genai code runs.
+if 'pytest' not in sys.modules:
+    _genai_key = os.getenv('GENAI_API_KEY')
+    if _genai_key and not os.getenv('GOOGLE_API_KEY'):
+        os.environ['GOOGLE_API_KEY'] = _genai_key
+        # Optional: print a safe startup message (no key value)
+        # print('Startup: synchronized GENAI_API_KEY -> GOOGLE_API_KEY')
+
 import logging
 import threading
 import time
