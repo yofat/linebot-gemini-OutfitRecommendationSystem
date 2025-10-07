@@ -76,6 +76,99 @@ CN_JP_MAP = {
 }
 
 
+COLOR_KEYWORDS = {
+    'ホワイト', 'ブラック', 'ブルー', 'レッド', 'グリーン', 'グレー', 'ネイビー', 'ベージュ', 'ブラウン',
+    'ピンク', 'パープル', 'イエロー', 'オレンジ', 'カーキ', 'アイボリー', 'モノトーン', 'ボルドー',
+    'ライトグレー', 'ダークグレー', 'ミント', 'スカイブルー', 'ライトブルー', 'ダークブルー', 'ワインレッド',
+    'シャンパン', 'グレージュ', 'テラコッタ', 'クリーム', 'アッシュ', 'マルチカラー'
+}
+
+APPAREL_KEYWORDS = {
+    'シャツ', 'ブラウス', 'tシャツ', 'ティーシャツ', 'トップス', 'パンツ', 'ジーンズ', 'デニム', 'チノ', 'スラックス',
+    'スカート', 'ミニスカート', 'ロングスカート', 'プリーツスカート', 'ワンピース', 'ドレス', 'ニット', 'セーター',
+    'カーディガン', 'スウェット', 'フーディー', 'パーカー', 'コート', 'ジャケット', 'トレンチ', 'アウター', 'ベスト',
+    'タートルネック', 'ポロシャツ', 'セットアップ', 'スーツ', 'オーバーオール', 'ジャンプスーツ', 'レギンス', 'タイツ',
+    'ボトムス', 'ショートパンツ', 'ハーフパンツ', 'ロンt', 'ロングtシャツ', 'カットソー', 'スウェットパンツ', 'ブルゾン',
+    'マウンテンパーカー', 'トレーナー', 'ニットワンピース', 'シャツワンピース', 'ジレ', 'キャミソール', 'タンクトップ',
+    'チュニック', 'ボレロ', 'ドルマン', 'ニットベスト', 'カバーオール', 'カーゴパンツ', 'フリース', 'ダウン',
+    'ダウンジャケット', 'ライダース', 'レザージャケット', 'パフスリーブ', 'ガウチョ', 'キュロット', 'サロペット'
+}
+
+FOOTWEAR_KEYWORDS = {
+    'シューズ', 'スニーカー', 'ローファー', 'パンプス', 'ヒール', 'サンダル', 'ブーツ', 'ミュール', 'フラット', 'スリッポン', 'モカシン'
+}
+
+EXCLUDED_KEYWORDS = {
+    'バッグ', 'カバン', 'バック', 'アクセサリー', 'アクセ', 'ジュエリー', 'ネックレス', 'イヤリング', 'ピアス', 'ブレスレット',
+    'リング', '帽子', 'キャップ', 'ハット', 'ビーニー', 'ニット帽', 'サングラス', 'メガネ', '眼鏡', 'ウォッチ', '時計',
+    '財布', 'カードケース', 'キーケース', 'スカーフ', 'マフラー', 'ストール', '手袋', 'グローブ', 'ベルト', 'ポーチ',
+    'バックパック', 'リュック', 'トート', 'ショルダー', 'クラッチ', 'ボストン', 'スーツケース', 'イヤカフ', 'アンクレット'
+}
+
+STYLE_KEYWORDS = {
+    'スリム', 'オーバーサイズ', 'リラックス', 'テーパード', 'ストレート', 'ワイド', 'タイト', 'フレア', 'ボックス', 'クロップド',
+    'ロング', 'ショート', 'ミディ', 'ハイウエスト', 'ローウエスト', 'フィット', 'クラシック', 'モード', 'エレガント',
+    'フェミニン', 'ストリート', 'スポーティー'
+}
+
+SCENE_KEYWORDS = {
+    'ビジネス', 'カジュアル', 'フォーマル', 'パーティー', 'オフィス', 'デート', 'アウトドア', 'リラックス', 'ワーク',
+    '通勤', '旅行', 'バケーション', 'ビーチ', '週末', 'キャンプ', '面接', 'オケージョン'
+}
+
+SEASON_KEYWORDS = {
+    '春', '夏', '秋', '冬', '梅雨', '真冬', '真夏', 'オールシーズン', '秋冬', '春夏', '昼間', '夕方', '朝', '夜'
+}
+
+MATERIAL_KEYWORDS = {
+    'コットン', 'リネン', 'シルク', 'ウール', 'カシミヤ', 'レザー', 'フェイクレザー', 'デニム', 'フリース', 'ナイロン',
+    'ポリエステル', 'ツイード', 'ベロア', 'スエード', 'シフォン', 'レース', 'ジャージ', 'サテン'
+}
+
+GENERAL_KEYWORDS = {
+    'コーデ', 'コーディネート', 'ファッション', 'スタイル', 'トレンド', 'おすすめ', '着回し', '着心地'
+}
+
+GENDER_KEYWORDS = {'メンズ', 'レディース', 'ユニセックス', '男女兼用', 'ジェンダーレス'}
+
+
+def _contains_keyword(token: str, keywords: set[str]) -> bool:
+    if not token:
+        return False
+    lower = token.lower()
+    for kw in keywords:
+        if not kw:
+            continue
+        if kw.lower() in lower:
+            return True
+    return False
+
+
+def _classify_token(token: str) -> str:
+    token = token.strip()
+    if not token:
+        return 'other'
+    if _contains_keyword(token, EXCLUDED_KEYWORDS):
+        return 'exclude'
+    if _contains_keyword(token, APPAREL_KEYWORDS) or _contains_keyword(token, FOOTWEAR_KEYWORDS):
+        return 'apparel'
+    if token in GENDER_KEYWORDS:
+        return 'gender'
+    if _contains_keyword(token, COLOR_KEYWORDS):
+        return 'color'
+    if _contains_keyword(token, STYLE_KEYWORDS):
+        return 'style'
+    if _contains_keyword(token, MATERIAL_KEYWORDS):
+        return 'material'
+    if _contains_keyword(token, SCENE_KEYWORDS):
+        return 'scene'
+    if _contains_keyword(token, SEASON_KEYWORDS):
+        return 'season'
+    if _contains_keyword(token, GENERAL_KEYWORDS):
+        return 'general'
+    return 'other'
+
+
 def translate_token(token: str) -> str:
     # crude normalisation
     t = token.strip()
@@ -115,6 +208,56 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
 
     # translate tokens where possible
     jp_tokens = [translate_token(t) for t in tokens if t]
+
+    groups = {
+        'gender': [],
+        'scene': [],
+        'season': [],
+        'color': [],
+        'style': [],
+        'material': [],
+        'apparel': [],
+        'general': [],
+        'other': []
+    }
+
+    apparel_count = 0
+    for tok in jp_tokens:
+        tok = tok.strip()
+        if not tok:
+            continue
+        category = _classify_token(tok)
+        if category == 'exclude':
+            continue
+        if category == 'apparel':
+            apparel_count += 1
+        target = category if category in groups else 'other'
+        groups[target].append(tok)
+
+    # dedupe within each group while preserving order
+    for key, values in groups.items():
+        seen = set()
+        deduped = []
+        for v in values:
+            if v not in seen:
+                deduped.append(v)
+                seen.add(v)
+        groups[key] = deduped
+
+    if apparel_count == 0:
+        groups['apparel'].append('トップス')
+
+    ordered_keys = ['gender', 'scene', 'season', 'color', 'style', 'material', 'apparel', 'general', 'other']
+    filtered_tokens = []
+    seen_all = set()
+    for key in ordered_keys:
+        for tok in groups.get(key, []):
+            if tok not in seen_all:
+                filtered_tokens.append(tok)
+                seen_all.add(tok)
+
+    jp_tokens = filtered_tokens
+    build_queries.last_tokens = jp_tokens  # type: ignore[attr-defined]
 
     # new signature supports gender and preferences via kwargs in a backward-compatible way
     queries = []

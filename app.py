@@ -232,7 +232,7 @@ def debug_shop_test():
     # use Rakuten-based shopping pipeline
     try:
         from shopping_queries import build_queries
-        from shopping_rakuten import search_items
+        from shopping_rakuten import search_items, resolve_genre_ids
         from utils_flex import flex_rakuten_carousel
         from shopping import SHOP_CURRENCY
         SHOP_MAX_RESULTS = int(os.getenv('RAKUTEN_MAX_RESULTS', '8'))
@@ -278,19 +278,23 @@ def debug_shop_test():
     queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
 
     rate_limit_qps = float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1'))
+    genre_ids = resolve_genre_ids(gender, preferences)
+
     diagnostics = {
         'rakuten_app_id_present': bool(os.getenv('RAKUTEN_APP_ID')),
         'max_results': max_results,
         'rate_limit_qps': rate_limit_qps,
+        'genre_ids': genre_ids,
+        'gender': gender,
         'per_query': []
     }
 
     # call Rakuten search per query and aggregate up to max_results
     products = []
     for q in queries:
-        entry = {'query': q}
+        entry = {'query': q, 'genre_ids': genre_ids}
         try:
-            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True)
+            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True, genre_ids=genre_ids)
             entry['items_count'] = len(items)
             if meta:
                 entry['meta'] = meta
@@ -308,7 +312,13 @@ def debug_shop_test():
             break
 
     flex = flex_rakuten_carousel(products)
-    out = {'queries': queries, 'products': products, 'flex': flex, 'diagnostics': diagnostics}
+    out = {
+        'queries': queries,
+        'products': products,
+        'flex': flex,
+        'diagnostics': diagnostics,
+        'genre_ids': genre_ids,
+    }
     return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
 
@@ -344,7 +354,7 @@ def debug_shop_run_json():
     # build queries and call Rakuten search
     try:
         from shopping_queries import build_queries
-        from shopping_rakuten import search_items
+        from shopping_rakuten import search_items, resolve_genre_ids
         from utils_flex import flex_rakuten_carousel
     except Exception:
         return 'rakuten modules unavailable', 500
@@ -353,18 +363,22 @@ def debug_shop_run_json():
     max_results = int(payload.get('max_results', os.getenv('RAKUTEN_MAX_RESULTS', '8')))
     rate_limit_qps = float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1'))
 
+    genre_ids = resolve_genre_ids(gender, prefs)
+
     diagnostics = {
         'rakuten_app_id_present': bool(os.getenv('RAKUTEN_APP_ID')),
         'max_results': max_results,
         'rate_limit_qps': rate_limit_qps,
+        'genre_ids': genre_ids,
+        'gender': gender,
         'per_query': []
     }
 
     products = []
     for q in queries:
-        entry = {'query': q}
+        entry = {'query': q, 'genre_ids': genre_ids}
         try:
-            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True)
+            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True, genre_ids=genre_ids)
             entry['items_count'] = len(items)
             if meta:
                 entry['meta'] = meta
@@ -382,7 +396,13 @@ def debug_shop_run_json():
             break
 
     flex = flex_rakuten_carousel(products)
-    out = {'queries': queries, 'products': products, 'flex': flex, 'diagnostics': diagnostics}
+    out = {
+        'queries': queries,
+        'products': products,
+        'flex': flex,
+        'diagnostics': diagnostics,
+        'genre_ids': genre_ids,
+    }
     return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
 

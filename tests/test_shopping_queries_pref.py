@@ -9,6 +9,9 @@ def test_build_queries_with_gender_and_preferences():
     assert 'レディース' in joined or 'メンズ' in joined
     assert 'レース' in joined
     assert 'スリム' in joined or 'オーバーサイズ' in joined
+    # ensure only apparel-related terms
+    banned = ['バッグ', 'アクセ', 'ジュエリー', 'ネックレス']
+    assert all(not any(b in q for b in banned) for q in queries)
     # should return a list with at most 6 items
     assert isinstance(queries, list)
     assert 1 <= len(queries) <= 6

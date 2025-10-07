@@ -6,6 +6,18 @@ from typing import List, Dict, Any, Optional, Tuple
 import requests
 
 
+def _parse_genre_list(value: str) -> List[str]:
+    if not value:
+        return []
+    return [v.strip() for v in value.split(',') if v.strip()]
+
+
+_DEFAULT_GENRES = _parse_genre_list(os.getenv('RAKUTEN_DEFAULT_GENRES', '100371,551169'))
+_FEMALE_GENRES = _parse_genre_list(os.getenv('RAKUTEN_FEMALE_GENRES', '100371'))
+_MALE_GENRES = _parse_genre_list(os.getenv('RAKUTEN_MALE_GENRES', '551169'))
+_UNISEX_GENRES = _parse_genre_list(os.getenv('RAKUTEN_UNISEX_GENRES', '100371,551169'))
+
+
 class RakutenAPIError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None, payload: Optional[Any] = None):
         super().__init__(message)
@@ -32,16 +44,38 @@ def _throttle(qps: float):
         _last_call = time.time()
 
 
-def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return_meta: bool = False) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Search Rakuten Ichiba API and return normalized list of products.
+def resolve_genre_ids(gender: str = '', preferences: Optional[List[str]] = None) -> List[str]:
+    """Return genre IDs appropriate for the provided gender/preferences."""
 
-    Raises RakutenAPIError on HTTP/JSON errors.
-    """
+    gender_norm = (gender or '').strip().lower()
+    prefs = preferences or []
+
+    def _fallback(values: List[str]) -> List[str]:
+        if values:
+            return values
+        if _DEFAULT_GENRES:
+            return _DEFAULT_GENRES
+        return []
+
+    if gender_norm in ('女性', '女', 'female', 'ladies', 'レディース', '女性向'):
+        return _fallback(_FEMALE_GENRES)
+    if gender_norm in ('男性', '男', 'male', 'mens', 'メンズ', '男性向'):
+        return _fallback(_MALE_GENRES)
+
+    prefs_join = ' '.join(prefs).lower()
+    if any(token in prefs_join for token in ['女性', 'ladies', 'レディース', '女装']):
+        return _fallback(_FEMALE_GENRES)
+    if any(token in prefs_join for token in ['男性', 'メンズ', 'mens']):
+        return _fallback(_MALE_GENRES)
+
+    return _fallback(_UNISEX_GENRES)
+
+
+def _search_single(keyword: str, max_results: int, qps: float, genre_id: Optional[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     app_id = os.getenv('RAKUTEN_APP_ID')
     if not app_id:
         raise RakutenAPIError('RAKUTEN_APP_ID missing')
 
-    # throttle
     _throttle(qps)
 
     url = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
@@ -51,12 +85,14 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
         'imageFlag': 1,
         'availability': 1,
         'formatVersion': 2,
-        'elements': 'itemName,itemPrice,itemUrl,shopName,reviewAverage,reviewCount,mediumImageUrls,affiliateUrl',
+        'elements': 'itemName,itemPrice,itemUrl,shopName,reviewAverage,reviewCount,mediumImageUrls,affiliateUrl,genreId',
         'hits': min(max_results, 30),
         'sort': '-reviewAverage',
     }
+    if genre_id:
+        params['genreId'] = genre_id
 
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = {'genre_id': genre_id}
 
     try:
         resp = requests.get(url, params=params, timeout=8)
@@ -73,7 +109,7 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
     except ValueError as e:
         raise RakutenAPIError('invalid json', payload=resp.text) from e
 
-    raw_items = []
+    raw_items: List[Dict[str, Any]] = []
     if isinstance(data, dict):
         for k in ('error', 'error_description', 'error_description_en', 'errorCode', 'errorDescription'):
             if data.get(k) is not None:
@@ -88,12 +124,11 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
         raw_items = data
 
     meta['raw_items_count'] = len(raw_items)
-    out = []
+    out: List[Dict[str, Any]] = []
     for entry in raw_items:
         if isinstance(entry, dict):
             item = entry.get('Item')
             if not item:
-                # formatVersion=2 returns flat dicts without nested `Item`
                 item = entry
         else:
             item = entry
@@ -102,7 +137,6 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
         image = None
         imgs = item.get('mediumImageUrls') or []
         if imgs:
-            # mediumImageUrls is list of dicts with imageUrl
             first = imgs[0]
             image = first.get('imageUrl') if isinstance(first, dict) else None
 
@@ -131,16 +165,61 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
             'shop': item.get('shopName'),
             'rating': rating,
             'reviews': reviews,
+            'genreId': item.get('genreId'),
         })
 
-    meta['items_returned'] = len(out)
-    if out:
-        sample = out[0]
-        meta.setdefault('sample_title', sample.get('title'))
-        meta.setdefault('sample_price', sample.get('price'))
-        meta.setdefault('sample_url', sample.get('url'))
+    return out, meta
+
+
+def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return_meta: bool = False, genre_ids: Optional[List[str]] = None) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Search Rakuten Ichiba API and return normalized list of products."""
+
+    genre_ids = [gid for gid in (genre_ids or []) if gid]
+
+    all_items: List[Dict[str, Any]] = []
+    metas: List[Dict[str, Any]] = []
+
+    if not genre_ids:
+        items, meta = _search_single(keyword, max_results, qps, None)
+        all_items.extend(items)
+        metas.append(meta)
+    else:
+        for gid in genre_ids:
+            if len(all_items) >= max_results:
+                break
+            items, meta = _search_single(keyword, max_results, qps, gid)
+            metas.append(meta)
+            all_items.extend(items)
+            if len(all_items) >= max_results:
+                break
+
+    seen_urls = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in all_items:
+        url = item.get('url')
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        deduped.append(item)
+        if len(deduped) >= max_results:
+            break
+
+    first_meta = metas[0] if metas else {}
+
+    meta_out: Dict[str, Any] = {
+        'genre_meta': metas,
+        'total_items': len(deduped),
+        'items_returned': len(deduped),
+        'raw_items_total': sum(m.get('raw_items_count', 0) for m in metas),
+        'raw_items_count': first_meta.get('raw_items_count') if isinstance(first_meta, dict) else None,
+    }
+    if deduped:
+        sample = deduped[0]
+        meta_out['sample_title'] = sample.get('title')
+        meta_out['sample_price'] = sample.get('price')
+        meta_out['sample_url'] = sample.get('url')
 
     if return_meta:
-        return out, meta
+        return deduped, meta_out
 
-    return out
+    return deduped

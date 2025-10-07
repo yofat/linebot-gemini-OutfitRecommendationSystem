@@ -3,7 +3,7 @@ import time
 import json
 import hashlib
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 try:
     import redis
 except Exception:
@@ -38,7 +38,7 @@ from sentry_init import set_user as sentry_set_user, set_tag as sentry_set_tag, 
 from templates.flex_outfit import build_flex_payload
 try:
     from shopping_queries import build_queries
-    from shopping_rakuten import search_items, RakutenAPIError
+    from shopping_rakuten import search_items, RakutenAPIError, resolve_genre_ids
     from utils_flex import flex_rakuten_carousel
 
     # in-memory keyword cache: keyword -> (ts, results)
@@ -71,7 +71,7 @@ try:
         _user_shopping_ts[uid] = now
         return True
 
-    def search_products(queries: list, max_results: int = 8):
+    def search_products(queries: list, max_results: int = 8, *, gender: str = '', preferences: Optional[List[str]] = None):
         """Orchestrate Rakuten searches for multiple queries until max_results collected.
 
         Uses per-keyword cache and global rate-limit implemented in shopping_rakuten.
@@ -83,12 +83,16 @@ try:
         except Exception:
             provider_qps = 1.0
 
+        genre_ids = resolve_genre_ids(gender, preferences)
+        genre_key = ','.join(genre_ids) if genre_ids else 'none'
+
         results = []
         for q in queries:
             if len(results) >= max_results:
                 break
             # check cache
-            cached = _cache_get(q)
+            cache_key = f"{q}|g={genre_key}"
+            cached = _cache_get(cache_key)
             if cached is not None:
                 results.extend(cached)
                 if len(results) >= max_results:
@@ -96,9 +100,9 @@ try:
                 continue
 
             try:
-                items = search_items(q, max_results=max_results, qps=provider_qps)
+                items = search_items(q, max_results=max_results, qps=provider_qps, genre_ids=genre_ids)
                 # store in cache
-                _cache_set(q, items)
+                _cache_set(cache_key, items)
                 results.extend(items)
             except RakutenAPIError as e:
                 # bubble up to caller
@@ -767,7 +771,7 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                 preferences = [p.strip() for p in preferences.split(',') if p.strip()]
             try:
                 queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
-                products = search_products(queries, max_results=SHOP_MAX_RESULTS)
+                products = search_products(queries, max_results=SHOP_MAX_RESULTS, gender=gender, preferences=preferences)
                 if not products:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))
                     return

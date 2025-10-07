@@ -299,10 +299,11 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": number\n"
         "  },\n"
         "  \"summary\": string,\n"
-        "  \"suggestions\": [string, string, string],\n"
+        "  \"suggestions\": [string, string, string],  // 每項必須是服飾或鞋類搜尋短語\n"
         "  \"gender\": string,             // 可選: 男性/女性/不公開/空字串\n"
         "  \"preferences\": [string, ...]  // 可選: 偏好詞彙，如 [\"蕾絲\", \"合身\"]\n"
         "}\n"
+        "僅能推薦服飾或鞋類單品，嚴禁輸出包包、配件、飾品或其他非穿著品。若性別無法判定，請提供男女皆宜的建議或同時標註對應版本。\n"
     )
 
     example = (
@@ -317,8 +318,8 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"shoes_bag\": 75,\n"
         "    \"grooming\": 90\n"
         "  },\n"
-        "  \"summary\": \"整體搭配良好，可增强配件色彩。\",\n"
-        "  \"suggestions\": [\"換一雙淺色鞋\", \"加一件薄外套\", \"髮型可更柔和\"],\n"
+        "  \"summary\": \"整體搭配良好，可再調整色彩平衡。\",\n"
+        "  \"suggestions\": [\"ホワイト シャツ スリムフィット\", \"ネイビー スラックス テーパード\", \"ブラウン レザー ローファー\"],\n"
         "  \"gender\": \"女性\",\n"
         "  \"preferences\": [\"蕾絲\", \"合身\"]\n"
         "}\n"
