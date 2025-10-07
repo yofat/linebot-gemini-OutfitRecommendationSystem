@@ -183,7 +183,8 @@ MAX_IMAGE = MAX_IMAGE_MB * 1024 * 1024
 
 # event dedup store (in-memory fallback, Redis optional)
 _event_cache: Dict[str, float] = {}
-_EVENT_TTL = int(os.getenv('EVENT_TTL_SECONDS', str(60 * 60)))
+# Increased to 2 hours to better handle retries without Redis
+_EVENT_TTL = int(os.getenv('EVENT_TTL_SECONDS', str(60 * 60 * 2)))
 _redis_client = None
 if os.getenv('REDIS_URL') and redis:
     try:
@@ -193,7 +194,9 @@ if os.getenv('REDIS_URL') and redis:
 
 # simple per-user recent message dedupe (memory fallback; optional Redis-backed)
 _recent_user_msg: Dict[str, float] = {}
-_RECENT_MSG_TTL = float(os.getenv('USER_MSG_DEDUPE_SEC', '2'))
+# For user text message content deduplication (e.g., prevent same question within 30s)
+# Increased from 2s to 30s to better handle webhook retries without Redis
+_RECENT_MSG_TTL = float(os.getenv('USER_MSG_DEDUPE_SEC', '30'))
 
 
 def _is_recent_same_message(uid: str, msg_hash: str, ttl: float = None) -> bool:
