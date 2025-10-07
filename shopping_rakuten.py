@@ -1,7 +1,7 @@
 import os
 import time
 import threading
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 
@@ -32,7 +32,7 @@ def _throttle(qps: float):
         _last_call = time.time()
 
 
-def search_items(keyword: str, max_results: int = 8, qps: float = 1.0) -> List[Dict[str, Any]]:
+def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return_meta: bool = False) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Search Rakuten Ichiba API and return normalized list of products.
 
     Raises RakutenAPIError on HTTP/JSON errors.
@@ -56,10 +56,14 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0) -> List[D
         'sort': '-reviewAverage',
     }
 
+    meta: Dict[str, Any] = {}
+
     try:
         resp = requests.get(url, params=params, timeout=8)
     except requests.RequestException as e:
         raise RakutenAPIError('network error', payload=str(e)) from e
+
+    meta['status_code'] = resp.status_code
 
     if resp.status_code != 200:
         raise RakutenAPIError('bad status', status_code=resp.status_code, payload=resp.text)
@@ -69,7 +73,17 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0) -> List[D
     except ValueError as e:
         raise RakutenAPIError('invalid json', payload=resp.text) from e
 
+    if isinstance(data, dict):
+        for k in ('error', 'error_description', 'error_description_en', 'errorCode', 'errorDescription'):
+            if data.get(k) is not None:
+                meta[k] = data.get(k)
+        if any(key in data for key in ('error', 'errorCode')):
+            raise RakutenAPIError('api error', payload=data)
+        meta['count'] = data.get('count')
+        meta['hits'] = data.get('hits')
+
     items = data.get('Items') or []
+    meta['items_returned'] = len(items)
     out = []
     for entry in items:
         item = entry.get('Item') if isinstance(entry, dict) else entry
@@ -108,5 +122,8 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0) -> List[D
             'rating': rating,
             'reviews': reviews,
         })
+
+    if return_meta:
+        return out, meta
 
     return out

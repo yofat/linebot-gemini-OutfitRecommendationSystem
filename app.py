@@ -290,8 +290,10 @@ def debug_shop_test():
     for q in queries:
         entry = {'query': q}
         try:
-            items = search_items(q, max_results=max_results, qps=rate_limit_qps)
+            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True)
             entry['items_count'] = len(items)
+            if meta:
+                entry['meta'] = meta
         except Exception as exc:
             entry['items_count'] = 0
             entry['error'] = str(exc)
@@ -362,8 +364,10 @@ def debug_shop_run_json():
     for q in queries:
         entry = {'query': q}
         try:
-            items = search_items(q, max_results=max_results, qps=rate_limit_qps)
+            items, meta = search_items(q, max_results=max_results, qps=rate_limit_qps, return_meta=True)
             entry['items_count'] = len(items)
+            if meta:
+                entry['meta'] = meta
         except Exception as exc:
             entry['items_count'] = 0
             entry['error'] = str(exc)
