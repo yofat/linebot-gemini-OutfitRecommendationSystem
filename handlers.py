@@ -947,8 +947,20 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             preferences = last.get('preferences') or ctx.get('preferences') or []
             if isinstance(preferences, str):
                 preferences = [p.strip() for p in preferences.split(',') if p.strip()]
+            
+            # Translate Chinese suggestions to Japanese keywords for Rakuten API
+            # Keep original Chinese suggestions for display, use Japanese for search
             try:
-                queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
+                from gemini_client import translate_to_japanese_keywords
+                japanese_keywords = translate_to_japanese_keywords(suggestions)
+                logger.info('Using Japanese keywords for search: %s', japanese_keywords)
+            except Exception as e:
+                logger.warning('Failed to translate suggestions, using original: %s', e)
+                japanese_keywords = suggestions  # Fallback to original
+            
+            try:
+                # Use Japanese keywords for Rakuten search
+                queries = build_queries(japanese_keywords, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
                 products = search_products(queries, max_results=SHOP_MAX_RESULTS, gender=gender, preferences=preferences)
                 if not products:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))

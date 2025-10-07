@@ -90,11 +90,12 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": number\n"
         "  },\n"
         "  \"summary\": string,\n"
-        "  \"suggestions\": [string, string, string],  // 每項必須是服飾或鞋類搜尋短語\n"
+        "  \"suggestions\": [string, string, string],  // 每項必須是服飾或鞋類的中文描述(例如: 白色襯衫、深藍色西裝褲)\n"
         "  \"gender\": string,             // 可選: 男性/女性/不公開/空字串\n"
         "  \"preferences\": [string, ...]  // 可選: 偏好詞彙，如 [\"蕾絲\", \"合身\"]\n"
         "}\n"
-        "僅能推薦服飾或鞋類單品，嚴禁輸出包包、配件、飾品或其他非穿著品。若性別無法判定，請提供男女皆宜的建議或同時標註對應版本。\n"
+        "重要: suggestions 必須使用繁體中文,描述具體的服飾單品(例如: '白色合身襯衫'、'深藍色西裝褲'、'棕色皮革樂福鞋')。\n"
+        "僅能推薦服飾或鞋類單品,嚴禁輸出包包、配件、飾品或其他非穿著品。若性別無法判定,請提供男女皆宜的建議或同時標註對應版本。\n"
     )
 
     example = (
@@ -110,7 +111,7 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": 90\n"
         "  },\n"
         "  \"summary\": \"整體搭配良好，可再調整色彩平衡。\",\n"
-        "  \"suggestions\": [\"ホワイト シャツ スリムフィット\", \"ネイビー スラックス テーパード\", \"ブラウン レザー ローファー\"],\n"
+        "  \"suggestions\": [\"白色合身襯衫\", \"深藍色西裝褲\", \"棕色皮革樂福鞋\"],\n"
         "  \"gender\": \"女性\",\n"
         "  \"preferences\": [\"蕾絲\", \"合身\"]\n"
         "}\n"
@@ -241,3 +242,67 @@ def image_analyze(image_bytes: bytes, prompt: str, retries: int = 3, timeout: Op
     except Exception as e:
         logger.exception('Error in image_analyze')
         return f'Error: {e}'
+
+
+def translate_to_japanese_keywords(chinese_suggestions: list) -> list:
+    """Translate Chinese clothing suggestions to Japanese search keywords for Rakuten API.
+    
+    Args:
+        chinese_suggestions: List of Chinese clothing descriptions (e.g., ["白色襯衫", "深藍色西裝褲"])
+    
+    Returns:
+        List of Japanese search keywords (e.g., ["ホワイト シャツ", "ネイビー スラックス"])
+    """
+    if not chinese_suggestions or not isinstance(chinese_suggestions, list):
+        return []
+    
+    client = _ensure_configured()
+    if not client:
+        logger.warning('Cannot translate suggestions: Gemini client not configured')
+        return chinese_suggestions  # Fallback to original
+    
+    try:
+        # Build translation prompt
+        items_text = '\n'.join([f'{i+1}. {s}' for i, s in enumerate(chinese_suggestions)])
+        prompt = (
+            f"請將以下繁體中文服飾描述翻譯成適合日本樂天購物網站搜尋的日文關鍵字。\n"
+            f"要求:\n"
+            f"1. 使用片假名標註顏色(例如: 白色→ホワイト, 黑色→ブラック, 深藍色→ネイビー)\n"
+            f"2. 服飾類型使用常見日文(例如: 襯衫→シャツ, 西裝褲→スラックス, 樂福鞋→ローファー)\n"
+            f"3. 保持簡潔,適合搜尋引擎\n"
+            f"4. 只回傳翻譯結果,每行一項,不要編號\n\n"
+            f"中文描述:\n{items_text}\n\n"
+            f"日文關鍵字:"
+        )
+        
+        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt
+        )
+        
+        # Parse response - expect one keyword per line
+        japanese_keywords = []
+        for line in response.text.strip().split('\n'):
+            line = line.strip()
+            # Remove numbering if present (e.g., "1. " or "1) ")
+            if line and len(line) > 0:
+                # Remove leading numbers and punctuation
+                import re
+                cleaned = re.sub(r'^\d+[\.\)]\s*', '', line)
+                if cleaned:
+                    japanese_keywords.append(cleaned)
+        
+        # Ensure we have same number of translations
+        if len(japanese_keywords) != len(chinese_suggestions):
+            logger.warning('Translation count mismatch: %d vs %d, using original', 
+                         len(japanese_keywords), len(chinese_suggestions))
+            return chinese_suggestions
+        
+        logger.info('Translated suggestions: %s -> %s', chinese_suggestions, japanese_keywords)
+        return japanese_keywords
+        
+    except Exception as e:
+        logger.exception('Failed to translate suggestions to Japanese')
+        return chinese_suggestions  # Fallback to original
+
