@@ -464,6 +464,15 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             pass
         raw_text = (getattr(event.message, 'text', '') or '')
         text = sanitize_user_text(raw_text)
+        
+        # Check for duplicate message content (user repeatedly asking same question)
+        import hashlib
+        msg_hash = hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
+        if _is_recent_same_message(user_id, msg_hash):
+            logger.info('duplicate message content from user %s, ignoring', user_id[:8])
+            # Silently ignore duplicate messages within the dedupe window
+            return
+        
         pi = scan_prompt_injection(text)
         if pi.get('detected'):
             # tag and respond with safe refusal
