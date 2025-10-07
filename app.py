@@ -1,20 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-
-# CRITICAL: Synchronize GENAI_API_KEY -> GOOGLE_API_KEY as the very first step
-# (before any other imports that might trigger google.auth.default()).
-# Some google client libraries look for GOOGLE_API_KEY in os.environ during
-# module import or client construction, and will fail with DefaultCredentialsError
-# if it's not present. This early sync ensures both env vars are available
-# before any google/genai code runs.
-if 'pytest' not in sys.modules:
-    _genai_key = os.getenv('GENAI_API_KEY')
-    if _genai_key and not os.getenv('GOOGLE_API_KEY'):
-        os.environ['GOOGLE_API_KEY'] = _genai_key
-        # Optional: print a safe startup message (no key value)
-        # print('Startup: synchronized GENAI_API_KEY -> GOOGLE_API_KEY')
-
 import logging
 import threading
 import time
@@ -29,6 +15,7 @@ from state import cleanup
 from sentry_init import init_sentry
 
 app = Flask(__name__)
+
 # Render's Secret Files feature writes plaintext files to /etc/secrets/<NAME>.
 # If the deploy used Secret Files instead of environment variables, try to load
 # those file contents into os.environ so the rest of the app (which uses
@@ -51,7 +38,7 @@ def _load_secrets_from_files(keys, base_path='/etc/secrets'):
                     pass
 
 
-# load commonly-used secrets from files if present
+# STEP 1: Load commonly-used secrets from files if present
 _load_secrets_from_files([
     'LINE_CHANNEL_ACCESS_TOKEN',
     'LINE_CHANNEL_SECRET',
@@ -61,6 +48,16 @@ _load_secrets_from_files([
     'RAKUTEN_APP_ID',
     'RAKUTEN_AFFILIATE_ID'
 ])
+
+# STEP 2: Synchronize GENAI_API_KEY -> GOOGLE_API_KEY (after secrets are loaded)
+# Some google client libraries look for GOOGLE_API_KEY in os.environ during
+# module import or client construction, and will fail with DefaultCredentialsError
+# if it's not present. This sync ensures both env vars are available before any
+# google/genai code runs.
+if 'pytest' not in sys.modules:
+    _genai_key = os.getenv('GENAI_API_KEY')
+    if _genai_key and not os.getenv('GOOGLE_API_KEY'):
+        os.environ['GOOGLE_API_KEY'] = _genai_key
 
 # Ensure genai is configured as early as possible to avoid races where
 # lower-level google clients call google.auth.default() during import/init
