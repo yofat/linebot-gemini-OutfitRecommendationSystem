@@ -529,11 +529,13 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             if env_candidates:
                 model_names = [m.strip() for m in env_candidates.split(',') if m.strip()]
             else:
-                # Free tier Gemini 2.0 models with multimodal support (v1beta API).
-                # Note: Gemini 1.5 has been deprecated as of 2025-10.
+                # Use full model resource names that Google API actually recognizes.
+                # Based on the API error messages, models need the full path format:
+                # "models/gemini-..." or just the base name without version suffix.
                 model_names = [
-                    'gemini-2.0-flash-exp',
-                    'gemini-2.0-flash',
+                    'models/gemini-2.0-flash-exp',
+                    'models/gemini-2.0-flash',
+                    'gemini-exp-1206',  # Experimental model (Dec 2024 snapshot)
                 ]
 
             last_exc = None
