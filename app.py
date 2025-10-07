@@ -153,6 +153,7 @@ def _debug_env_presence():
         'LINE_CHANNEL_SECRET',
         'LINE_CHANNEL_ACCESS_TOKEN',
         'GENAI_API_KEY',
+        'GOOGLE_API_KEY',  # Added to verify entrypoint.sh sync worked
         'SENTRY_DSN',
         'REDIS_URL',
         'RAKUTEN_APP_ID',
