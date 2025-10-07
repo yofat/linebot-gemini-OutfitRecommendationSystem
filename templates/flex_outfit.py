@@ -14,10 +14,13 @@ def build_flex_payload(overall: int, subs: dict, summary: str, suggestions: list
         Dict representing LINE Flex Message bubble format
     """
     # Build contents list starting with scores and summary
+    # Format subscores as readable text
+    subscore_text = f"合身: {subs.get('fit', 0)} | 配色: {subs.get('color', 0)} | 場合: {subs.get('occasion', 0)} | 平衡: {subs.get('balance', 0)} | 鞋包: {subs.get('shoes_bag', 0)} | 儀容: {subs.get('grooming', 0)}"
+    
     contents = [
         {"type": "text", "text": f"總分: {overall}", "weight": "bold", "size": "xl", "color": "#1DB446"},
         {"type": "separator", "margin": "md"},
-        {"type": "text", "text": f"子分數: {'fit': {subs.get('fit', 0)}, 'color': {subs.get('color', 0)}, 'occasion': {subs.get('occasion', 0)}, 'balance': {subs.get('balance', 0)}, 'shoes_bag': {subs.get('shoes_bag', 0)}, 'grooming': {subs.get('grooming', 0)}}", "wrap": True, "size": "sm", "color": "#666666", "margin": "md"},
+        {"type": "text", "text": subscore_text, "wrap": True, "size": "sm", "color": "#666666", "margin": "md"},
         {"type": "separator", "margin": "md"},
         {"type": "text", "text": f"摘要: {summary}", "wrap": True, "margin": "md"},
     ]

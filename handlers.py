@@ -808,51 +808,45 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             except Exception:
                 # non-fatal; continue without quick-reply
                 pass
-            line_bot_api.reply_message(event.reply_token, reply_items)
+            
+            # Try reply first, fallback to push if token expired
+            try:
+                line_bot_api.reply_message(event.reply_token, reply_items)
+            except Exception as e:
+                # If reply token expired (processing took too long), use push instead
+                logger.warning(f'Reply token expired, using push message: {e}')
+                for item in reply_items:
+                    line_bot_api.push_message(user_id, item)
+                    
         except Exception:
             logger.exception('failed to send flex message, fallback to text')
             # fallback to text messages
             body = f"總分: {overall_int}\n摘要: {summary}\n建議:\n" + '\n'.join(suggestions[:3])
             parts = split_message(body)
             messages = [TextSendMessage(text=truncate(p)) for p in parts]
+            
+            # Try reply first, fallback to push if token expired
             try:
                 line_bot_api.reply_message(event.reply_token, messages[:5])
                 for m in messages[5:]:
                     line_bot_api.push_message(user_id, m)
-            except Exception:
-                logger.exception('failed to send fallback messages')
-            # also offer quick-reply even on fallback text, but include in the same reply to avoid extra push
-            try:
-                    if build_queries is not None:
-                        qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
-                        quick_msg = TextSendMessage(text='要看推薦單品嗎？')
-                        try:
-                            setattr(quick_msg, 'quick_reply', qr)
-                        except Exception:
-                            pass
-                    # assemble reply batch with quick_msg while respecting LINE's 5-message reply limit
-                    if len(messages) >= 5:
-                        reply_batch = messages[:4] + [quick_msg]
-                        remaining = messages[4:]
-                    else:
-                        reply_batch = messages[:]
-                        reply_batch.append(quick_msg)
-                        remaining = []
+            except Exception as e:
+                logger.warning(f'Reply token expired in fallback, using push: {e}')
+                for m in messages:
+                    line_bot_api.push_message(user_id, m)
+            
+            # Also offer quick-reply for shopping if available
+            if build_queries is not None:
+                try:
+                    qr = QuickReply(items=[QuickReplyButton(action=PostbackAction(label='看推薦單品', data='action=shop'))])
+                    quick_msg = TextSendMessage(text='要看推薦單品嗎？')
                     try:
-                        line_bot_api.reply_message(event.reply_token, reply_batch)
-                        for m in remaining:
-                            line_bot_api.push_message(user_id, m)
+                        setattr(quick_msg, 'quick_reply', qr)
                     except Exception:
-                        # if reply fails, fallback to previous behavior
-                        try:
-                            line_bot_api.reply_message(event.reply_token, messages[:5])
-                            for m in messages[5:]:
-                                line_bot_api.push_message(user_id, m)
-                        except Exception:
-                            logger.exception('failed to send fallback messages')
-                    return
-            except Exception:
-                pass
+                        pass
+                    line_bot_api.push_message(user_id, quick_msg)
+                except Exception:
+                    pass
 
     @handler.add(PostbackEvent)
     def on_postback(event):
