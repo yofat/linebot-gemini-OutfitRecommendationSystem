@@ -47,6 +47,17 @@ _load_secrets_from_files([
     'RAKUTEN_AFFILIATE_ID'
 ])
 
+# Ensure genai is configured as early as possible to avoid races where
+# lower-level google clients call google.auth.default() during import/init
+# before our lazy configure runs. This is best-effort and won't expose
+# secrets in logs.
+try:
+    from gemini_client import _ensure_configured
+    _ensure_configured()
+except Exception:
+    # Don't fail startup for diagnostics; errors will be visible in logs
+    logging.getLogger(__name__).debug('early genai configure failed', exc_info=True)
+
 LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 
