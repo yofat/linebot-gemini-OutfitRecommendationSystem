@@ -299,7 +299,9 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": number\n"
         "  },\n"
         "  \"summary\": string,\n"
-        "  \"suggestions\": [string, string, string]\n"
+        "  \"suggestions\": [string, string, string],\n"
+        "  \"gender\": string,             // 可選: 男性/女性/不公開/空字串\n"
+        "  \"preferences\": [string, ...]  // 可選: 偏好詞彙，如 [\"蕾絲\", \"合身\"]\n"
         "}\n"
     )
 
@@ -316,7 +318,9 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": 90\n"
         "  },\n"
         "  \"summary\": \"整體搭配良好，可增强配件色彩。\",\n"
-        "  \"suggestions\": [\"換一雙淺色鞋\", \"加一件薄外套\", \"髮型可更柔和\"]\n"
+        "  \"suggestions\": [\"換一雙淺色鞋\", \"加一件薄外套\", \"髮型可更柔和\"],\n"
+        "  \"gender\": \"女性\",\n"
+        "  \"preferences\": [\"蕾絲\", \"合身\"]\n"
         "}\n"
     )
 
@@ -738,12 +742,14 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
 
 
 def _fallback_outfit_json(reason: str) -> dict:
-    return {
-        'overall_score': 0,
-        'subscores': {'fit': 0, 'color': 0, 'occasion': 0, 'balance': 0, 'shoes_bag': 0, 'grooming': 0},
-        'summary': f'分析失敗: {reason}',
-        'suggestions': ['', '', '']
-    }
+        return {
+            "overall_score": 0,
+            "subscores": {},
+            "summary": "無法取得建議，請稍後再試。",
+            "suggestions": [],
+            "gender": "",
+            "preferences": [],
+        }
 
 
 def probe_model_availability(model_name: str, timeout: float = 5.0) -> tuple:

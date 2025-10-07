@@ -761,8 +761,12 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             scene = ctx.get('scene', '')
             purpose = ctx.get('purpose', '')
             time_weather = ctx.get('time_weather', '')
+            gender = last.get('gender') or ctx.get('gender', '')
+            preferences = last.get('preferences') or ctx.get('preferences') or []
+            if isinstance(preferences, str):
+                preferences = [p.strip() for p in preferences.split(',') if p.strip()]
             try:
-                queries = build_queries(suggestions, scene, purpose)
+                queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
                 products = search_products(queries, max_results=SHOP_MAX_RESULTS)
                 if not products:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))

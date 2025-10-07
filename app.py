@@ -235,6 +235,8 @@ def debug_shop_test():
         Scene: <input name="scene" value="上班"><br>
         Purpose: <input name="purpose" value="正式"><br>
         Time/Weather: <input name="time_weather" value="白天"><br>
+        Gender: <input name="gender" value="女性"><br>
+        Preferences (space/comma separated): <input name="preferences" value="蕾絲 合身"><br>
         Max Results: <input name="max_results" value="8"><br>
         <input type="submit" value="Search">
         </form>
@@ -261,13 +263,27 @@ def debug_shop_test():
     # build JP queries using shopping_queries.build_queries
     queries = build_queries(suggestions, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
 
+    rate_limit_qps = float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1'))
+    diagnostics = {
+        'rakuten_app_id_present': bool(os.getenv('RAKUTEN_APP_ID')),
+        'max_results': max_results,
+        'rate_limit_qps': rate_limit_qps,
+        'per_query': []
+    }
+
     # call Rakuten search per query and aggregate up to max_results
     products = []
     for q in queries:
+        entry = {'query': q}
         try:
-            items = search_items(q, max_results=max_results, qps=float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1')))
-        except Exception:
+            items = search_items(q, max_results=max_results, qps=rate_limit_qps)
+            entry['items_count'] = len(items)
+        except Exception as exc:
+            entry['items_count'] = 0
+            entry['error'] = str(exc)
+            entry['exception_type'] = exc.__class__.__name__
             items = []
+        diagnostics['per_query'].append(entry)
         for it in items:
             if len(products) >= max_results:
                 break
@@ -276,7 +292,7 @@ def debug_shop_test():
             break
 
     flex = flex_rakuten_carousel(products)
-    out = {'queries': queries, 'products': products, 'flex': flex}
+    out = {'queries': queries, 'products': products, 'flex': flex, 'diagnostics': diagnostics}
     return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
 
@@ -319,13 +335,27 @@ def debug_shop_run_json():
 
     queries = build_queries(suggestions, payload.get('scene', ''), payload.get('purpose', ''), time_weather=payload.get('time_weather',''), gender=gender, preferences=prefs)
     max_results = int(payload.get('max_results', os.getenv('RAKUTEN_MAX_RESULTS', '8')))
+    rate_limit_qps = float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1'))
+
+    diagnostics = {
+        'rakuten_app_id_present': bool(os.getenv('RAKUTEN_APP_ID')),
+        'max_results': max_results,
+        'rate_limit_qps': rate_limit_qps,
+        'per_query': []
+    }
 
     products = []
     for q in queries:
+        entry = {'query': q}
         try:
-            items = search_items(q, max_results=max_results, qps=float(os.getenv('RAKUTEN_RATE_LIMIT_QPS', '1')))
-        except Exception:
+            items = search_items(q, max_results=max_results, qps=rate_limit_qps)
+            entry['items_count'] = len(items)
+        except Exception as exc:
+            entry['items_count'] = 0
+            entry['error'] = str(exc)
+            entry['exception_type'] = exc.__class__.__name__
             items = []
+        diagnostics['per_query'].append(entry)
         for it in items:
             if len(products) >= max_results:
                 break
@@ -334,7 +364,7 @@ def debug_shop_run_json():
             break
 
     flex = flex_rakuten_carousel(products)
-    out = {'queries': queries, 'products': products, 'flex': flex}
+    out = {'queries': queries, 'products': products, 'flex': flex, 'diagnostics': diagnostics}
     return app.response_class(json.dumps(out, ensure_ascii=False), mimetype='application/json')
 
 
