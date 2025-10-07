@@ -91,7 +91,8 @@ APPAREL_KEYWORDS = {
     'ボトムス', 'ショートパンツ', 'ハーフパンツ', 'ロンt', 'ロングtシャツ', 'カットソー', 'スウェットパンツ', 'ブルゾン',
     'マウンテンパーカー', 'トレーナー', 'ニットワンピース', 'シャツワンピース', 'ジレ', 'キャミソール', 'タンクトップ',
     'チュニック', 'ボレロ', 'ドルマン', 'ニットベスト', 'カバーオール', 'カーゴパンツ', 'フリース', 'ダウン',
-    'ダウンジャケット', 'ライダース', 'レザージャケット', 'パフスリーブ', 'ガウチョ', 'キュロット', 'サロペット'
+    'ダウンジャケット', 'ライダース', 'レザージャケット', 'パフスリーブ', 'ガウチョ', 'キュロット', 'サロペット',
+    '袴', '訪問着', '着物', '羽織', '甚平', '浴衣', '帯', 'アンサンブル', 'ポンチョ'
 }
 
 FOOTWEAR_KEYWORDS = {
@@ -102,7 +103,8 @@ EXCLUDED_KEYWORDS = {
     'バッグ', 'カバン', 'バック', 'アクセサリー', 'アクセ', 'ジュエリー', 'ネックレス', 'イヤリング', 'ピアス', 'ブレスレット',
     'リング', '帽子', 'キャップ', 'ハット', 'ビーニー', 'ニット帽', 'サングラス', 'メガネ', '眼鏡', 'ウォッチ', '時計',
     '財布', 'カードケース', 'キーケース', 'スカーフ', 'マフラー', 'ストール', '手袋', 'グローブ', 'ベルト', 'ポーチ',
-    'バックパック', 'リュック', 'トート', 'ショルダー', 'クラッチ', 'ボストン', 'スーツケース', 'イヤカフ', 'アンクレット'
+    'バックパック', 'リュック', 'トート', 'ショルダー', 'クラッチ', 'ボストン', 'スーツケース', 'イヤカフ', 'アンクレット',
+    '髪飾り', 'ヘアアクセ', 'ヘアアクセサリー', 'ヘアピン', 'ヘアゴム', 'ヘアバンド'
 }
 
 STYLE_KEYWORDS = {
@@ -130,6 +132,8 @@ GENERAL_KEYWORDS = {
 }
 
 GENDER_KEYWORDS = {'メンズ', 'レディース', 'ユニセックス', '男女兼用', 'ジェンダーレス'}
+
+APPAREL_KEYWORDS_LOWER = {kw.lower() for kw in APPAREL_KEYWORDS | FOOTWEAR_KEYWORDS}
 
 
 def _contains_keyword(token: str, keywords: set[str]) -> bool:
@@ -259,6 +263,10 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
     jp_tokens = filtered_tokens
     build_queries.last_tokens = jp_tokens  # type: ignore[attr-defined]
 
+    def _query_has_apparel(q: str) -> bool:
+        ql = q.lower()
+        return any(app_kw in ql for app_kw in APPAREL_KEYWORDS_LOWER)
+
     # new signature supports gender and preferences via kwargs in a backward-compatible way
     queries = []
     # primary query: join all
@@ -291,6 +299,24 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
                 men_added.append(lq)
 
     queries.extend(men_added)
+
+    # keep only apparel-focused queries; if none remain, synthesize fallback combos
+    apparel_queries = [q for q in queries if _query_has_apparel(q)]
+    if apparel_queries:
+        queries = apparel_queries
+    else:
+        fallback_queries = []
+        primary_color = groups['color'][0] if groups['color'] else ''
+        primary_style = groups['style'][0] if groups['style'] else ''
+        primary_gender = groups['gender'][0] if groups['gender'] else ''
+        base_parts = [tok for tok in (primary_gender, primary_color, primary_style) if tok]
+        apparel_tokens = groups['apparel'] or ['トップス']
+        for apparel_tok in apparel_tokens[:3]:
+            parts = base_parts + [apparel_tok]
+            q = ' '.join(parts).strip()
+            if q and q not in fallback_queries:
+                fallback_queries.append(q)
+        queries = fallback_queries or ['トップス']
 
     # sanitize: length cap and dedupe
     out = []

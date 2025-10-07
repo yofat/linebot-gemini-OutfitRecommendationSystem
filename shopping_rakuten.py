@@ -6,6 +6,37 @@ from typing import List, Dict, Any, Optional, Tuple
 import requests
 
 
+APPAREL_TITLE_KEYWORDS = {
+    'シャツ', 'ブラウス', 'tシャツ', 'ティーシャツ', 'トップス', 'パンツ', 'ジーンズ', 'デニム', 'チノ', 'スラックス',
+    'スカート', 'ミニスカート', 'ロングスカート', 'プリーツスカート', 'ワンピース', 'ドレス', 'ニット', 'セーター',
+    'カーディガン', 'スウェット', 'フーディー', 'パーカー', 'コート', 'ジャケット', 'トレンチ', 'アウター', 'ベスト',
+    'タートルネック', 'ポロシャツ', 'セットアップ', 'スーツ', 'オーバーオール', 'ジャンプスーツ', 'レギンス', 'タイツ',
+    'ボトムス', 'ショートパンツ', 'ハーフパンツ', 'ロンt', 'ロングtシャツ', 'カットソー', 'スウェットパンツ', 'ブルゾン',
+    'マウンテンパーカー', 'トレーナー', 'ニットワンピース', 'シャツワンピース', 'ジレ', 'キャミソール', 'タンクトップ',
+    'チュニック', 'ボレロ', 'ドルマン', 'ニットベスト', 'カバーオール', 'カーゴパンツ', 'フリース', 'ダウン',
+    'ダウンジャケット', 'ライダース', 'レザージャケット', 'パフスリーブ', 'ガウチョ', 'キュロット', 'サロペット',
+    'シューズ', 'スニーカー', 'ローファー', 'パンプス', 'ヒール', 'サンダル', 'ブーツ', 'ミュール', 'フラット', 'スリッポン', 'モカシン',
+    '袴', '訪問着', '着物', '羽織', '浴衣', '甚平', 'アンサンブル', 'ポンチョ'
+}
+
+BANNED_TITLE_KEYWORDS = {
+    '髪飾', 'ヘアアクセ', 'ヘアアクセサリー', 'ヘアピン', 'ヘアゴム', 'ヘアバンド',
+    'ヘアクリップ', 'ヘアカフ', 'ヘアカフス', 'ヘアチョーカー',
+    'ペット', '犬用', '猫用', 'ペット服', 'ペット用品'
+}
+
+_apparel_keywords_lower = {kw.lower() for kw in APPAREL_TITLE_KEYWORDS}
+_banned_keywords_lower = {kw.lower() for kw in BANNED_TITLE_KEYWORDS}
+
+
+def _title_has_apparel(title_lower: str) -> bool:
+    return any(kw in title_lower for kw in _apparel_keywords_lower)
+
+
+def _title_has_banned(title_lower: str) -> bool:
+    return any(kw in title_lower for kw in _banned_keywords_lower)
+
+
 def _parse_genre_list(value: str) -> List[str]:
     if not value:
         return []
@@ -200,6 +231,12 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
         if not url or url in seen_urls:
             continue
         seen_urls.add(url)
+        title = item.get('title') or ''
+        title_lower = title.lower()
+        if title and _title_has_banned(title_lower):
+            continue
+        if title and not _title_has_apparel(title_lower):
+            continue
         deduped.append(item)
         if len(deduped) >= max_results:
             break

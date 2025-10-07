@@ -10,7 +10,7 @@ def fake_resp_flat():
         'hits': 1,
         'Items': [
             {
-                'itemName': 'テスト商品',
+                'itemName': 'テスト商品 Tシャツ',
                 'itemPrice': 1234,
                 'itemUrl': 'https://example.com/item',
                 'shopName': 'ショップ',
@@ -27,7 +27,7 @@ def fake_resp_nested():
     return {
         'Items': [
             {'Item': {
-                'itemName': 'テスト商品',
+                'itemName': 'テスト商品 Tシャツ',
                 'itemPrice': 1234,
                 'itemUrl': 'https://example.com/item',
                 'shopName': 'ショップ',
@@ -58,7 +58,7 @@ def test_search_normalize_flat(mock_get, monkeypatch):
     assert isinstance(items, list)
     assert len(items) == 1
     it = items[0]
-    assert it['title'] == 'テスト商品'
+    assert it['title'] == 'テスト商品 Tシャツ'
     assert it['price'] == 1234
     assert it['url'].startswith('https://')
     assert it['image'].endswith('.jpg')
@@ -82,4 +82,4 @@ def test_search_normalize_nested(mock_get, monkeypatch):
     items = search_items('テスト', max_results=1, qps=1000)
     assert isinstance(items, list)
     assert len(items) == 1
-    assert items[0]['title'] == 'テスト商品'
+    assert items[0]['title'] == 'テスト商品 Tシャツ'
