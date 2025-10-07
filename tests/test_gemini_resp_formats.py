@@ -4,38 +4,63 @@ import pytest
 from gemini_client import text_generate
 
 
-class ObjResp:
-    class Content:
-        def __init__(self, text):
-            self.text = text
-
-    class Out:
-        def __init__(self, content):
-            self.content = content
-
+class FakeResponse:
     def __init__(self, text):
-        self.output = [ObjResp.Out([ObjResp.Content(text)])]
+        self.text = text
 
 
 def test_text_generate_with_object_like(monkeypatch):
-    def fake_create(model, input):
-        return ObjResp('object result')
-
-    dummy = types.SimpleNamespace(TextGeneration=types.SimpleNamespace(create=fake_create))
-    monkeypatch.setattr('gemini_client.genai', dummy)
+    """Test with new SDK structure returning object response."""
+    
+    class FakeModels:
+        @staticmethod
+        def generate_content(model, contents):
+            return FakeResponse('object result')
+    
+    class FakeClient:
+        models = FakeModels()
+    
+    class FakeGenai:
+        @staticmethod
+        def Client(api_key):
+            return FakeClient()
+    
+    monkeypatch.setattr('gemini_client.genai', FakeGenai)
+    monkeypatch.setattr('gemini_client.types', types.SimpleNamespace())
     monkeypatch.setenv('GENAI_API_KEY', 'x')
+    
+    # Reset client
+    import gemini_client
+    gemini_client._GENAI_CLIENT = None
 
     out = text_generate('hello')
     assert 'object result' in out
 
 
 def test_text_generate_with_dict_like(monkeypatch):
-    def fake_create(model, input):
-        return {'output': [{'content': [{'text': 'dict result'}]}]}
-
-    dummy = types.SimpleNamespace(TextGeneration=types.SimpleNamespace(create=fake_create))
-    monkeypatch.setattr('gemini_client.genai', dummy)
+    """Test with dict-like response (for compatibility)."""
+    
+    class FakeModels:
+        @staticmethod
+        def generate_content(model, contents):
+            return FakeResponse('dict result')
+    
+    class FakeClient:
+        models = FakeModels()
+    
+    class FakeGenai:
+        @staticmethod
+        def Client(api_key):
+            return FakeClient()
+    
+    monkeypatch.setattr('gemini_client.genai', FakeGenai)
+    monkeypatch.setattr('gemini_client.types', types.SimpleNamespace())
     monkeypatch.setenv('GENAI_API_KEY', 'x')
+    
+    # Reset client
+    import gemini_client
+    gemini_client._GENAI_CLIENT = None
 
     out = text_generate('hello')
     assert 'dict result' in out
+

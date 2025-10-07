@@ -4,21 +4,34 @@ import types
 from gemini_client import text_generate
 
 
-class DummyGenAI:
-    class TextGeneration:
-        @staticmethod
-        def create(model, input):
-            class Resp:
-                output = [{'content': [{'text': 'ok result'}]}]
+class FakeResponse:
+    text = 'ok result'
 
-            return Resp()
+
+class FakeModels:
+    @staticmethod
+    def generate_content(model, contents):
+        return FakeResponse()
+
+
+class FakeClient:
+    models = FakeModels()
+
+
+class DummyGenAI:
+    @staticmethod
+    def Client(api_key):
+        return FakeClient()
 
 
 @pytest.fixture(autouse=True)
 def patch_genai(monkeypatch):
-    dummy = types.SimpleNamespace(TextGeneration=DummyGenAI.TextGeneration)
-    monkeypatch.setattr('gemini_client.genai', dummy)
+    monkeypatch.setattr('gemini_client.genai', DummyGenAI)
+    monkeypatch.setattr('gemini_client.types', types.SimpleNamespace())
     monkeypatch.setenv('GENAI_API_KEY', 'test')
+    # Reset client to None to force re-initialization
+    import gemini_client
+    gemini_client._GENAI_CLIENT = None
     yield
 
 
