@@ -75,7 +75,11 @@ def _extract_retry_seconds_from_msg(msg: str) -> Optional[float]:
 
 
 def _get_api_key() -> Optional[str]:
-    return os.getenv('GENAI_API_KEY')
+    # Prefer explicit GENAI_API_KEY, fall back to GOOGLE_API_KEY for environments
+    # that set the more commonly named variable. This helps the underlying
+    # google client libraries which may look for GOOGLE_API_KEY or ADC.
+    key = os.getenv('GENAI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+    return key
 
 
 def _get_timeout() -> float:
@@ -100,12 +104,26 @@ def _ensure_configured():
         client_options = {'api_version': api_version}
         try:
             genai.configure(api_key=key, client_options=client_options)
+            # Also set GOOGLE_API_KEY env var when not present so downstream
+            # google client code that calls google.auth.default() can pick up
+            # the key in some environments.
+            if not os.getenv('GOOGLE_API_KEY'):
+                try:
+                    os.environ['GOOGLE_API_KEY'] = key
+                except Exception:
+                    # non-fatal if we can't set env var
+                    pass
             _GENAI_CONFIGURED = True
             return
         except TypeError:
             # Older SDKs (<0.6) do not accept client_options; retry without it.
             try:
                 genai.configure(api_key=key)
+                if not os.getenv('GOOGLE_API_KEY'):
+                    try:
+                        os.environ['GOOGLE_API_KEY'] = key
+                    except Exception:
+                        pass
                 _GENAI_CONFIGURED = True
                 return
             except Exception:
