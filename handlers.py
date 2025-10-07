@@ -452,10 +452,19 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
     @handler.add(MessageEvent, message=TextMessage)
     def on_text(event):
-        event_id = getattr(event, 'id', None) or getattr(event, 'timestamp', None)
+        # Get event ID from message.id (LINE's unique message identifier)
+        # This is crucial for preventing webhook retries from processing twice
+        event_id = None
+        if hasattr(event, 'message') and hasattr(event.message, 'id'):
+            event_id = event.message.id
+        if not event_id:
+            # Fallback to event-level timestamp
+            event_id = getattr(event, 'timestamp', None)
+        
         if event_id and _is_duplicate(event_id):
             logger.info('duplicate text event skipped: %s', event_id)
             return
+        
         user_id = event.source.user_id
         # set obfuscated user id for Sentry
         try:
@@ -610,10 +619,17 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
     @handler.add(MessageEvent, message=ImageMessage)
     def on_image(event):
-        event_id = getattr(event, 'id', None) or getattr(event, 'timestamp', None)
+        # Get event ID from message.id (LINE's unique message identifier)
+        event_id = None
+        if hasattr(event, 'message') and hasattr(event.message, 'id'):
+            event_id = event.message.id
+        if not event_id:
+            event_id = getattr(event, 'timestamp', None)
+        
         if event_id and _is_duplicate(event_id):
             logger.info('duplicate image event skipped: %s', event_id)
             return
+        
         user_id = event.source.user_id
         # set obfuscated user id for Sentry and tag
         try:
@@ -837,6 +853,12 @@ def register_handlers(line_bot_api: LineBotApi, handler):
 
     @handler.add(PostbackEvent)
     def on_postback(event):
+        # Get event ID for deduplication
+        event_id = getattr(event, 'timestamp', None)
+        if event_id and _is_duplicate(event_id):
+            logger.info('duplicate postback event skipped: %s', event_id)
+            return
+        
         # parse postback data like 'q2=正式' or 'q1=餐廳'
         if not hasattr(event, 'postback') or not getattr(event, 'postback'):
             return
