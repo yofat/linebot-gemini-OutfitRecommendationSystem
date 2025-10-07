@@ -73,6 +73,7 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
     except ValueError as e:
         raise RakutenAPIError('invalid json', payload=resp.text) from e
 
+    raw_items = []
     if isinstance(data, dict):
         for k in ('error', 'error_description', 'error_description_en', 'errorCode', 'errorDescription'):
             if data.get(k) is not None:
@@ -82,11 +83,20 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
         meta['count'] = data.get('count')
         meta['hits'] = data.get('hits')
 
-    items = data.get('Items') or []
-    meta['items_returned'] = len(items)
+        raw_items = data.get('Items') or []
+    elif isinstance(data, list):
+        raw_items = data
+
+    meta['raw_items_count'] = len(raw_items)
     out = []
-    for entry in items:
-        item = entry.get('Item') if isinstance(entry, dict) else entry
+    for entry in raw_items:
+        if isinstance(entry, dict):
+            item = entry.get('Item')
+            if not item:
+                # formatVersion=2 returns flat dicts without nested `Item`
+                item = entry
+        else:
+            item = entry
         if not item:
             continue
         image = None
@@ -122,6 +132,13 @@ def search_items(keyword: str, max_results: int = 8, qps: float = 1.0, *, return
             'rating': rating,
             'reviews': reviews,
         })
+
+    meta['items_returned'] = len(out)
+    if out:
+        sample = out[0]
+        meta.setdefault('sample_title', sample.get('title'))
+        meta.setdefault('sample_price', sample.get('price'))
+        meta.setdefault('sample_url', sample.get('url'))
 
     if return_meta:
         return out, meta
