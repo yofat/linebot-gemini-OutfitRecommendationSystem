@@ -283,17 +283,43 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
     # new signature supports gender and preferences via kwargs in a backward-compatible way
     queries = []
     
-    # Strategy: Create focused queries for each apparel item with gender + primary color
-    # This works better than one big query with everything
+    # Strategy: Try to preserve color+item pairs from original suggestions
+    # Then create focused queries for each apparel item
     gender_token = groups['gender'][0] if groups['gender'] else ''
-    primary_color = groups['color'][0] if groups['color'] else ''
     
-    # Generate one query per apparel item (most specific)
-    for apparel_item in groups['apparel'][:3]:  # Max 3 apparel items
-        parts = [gender_token, primary_color, apparel_item]
+    # First, try to match colors with apparel items based on original suggestions
+    # Parse original suggestions to extract color-item pairs
+    color_item_pairs = []
+    for s in (suggestions or [])[:3]:
+        parts = s.split()
+        item_found = None
+        color_found = None
+        for part in parts:
+            if _classify_token(part) == 'apparel':
+                item_found = part
+            elif _classify_token(part) == 'color':
+                color_found = part
+        if item_found:
+            color_item_pairs.append((color_found, item_found))
+    
+    # Generate queries from color-item pairs
+    for color, item in color_item_pairs:
+        if color:
+            parts = [gender_token, color, item]
+        else:
+            parts = [gender_token, item]
         query = ' '.join([p for p in parts if p]).strip()
         if query and query not in queries:
             queries.append(query)
+    
+    # If no pairs found, fall back to combining first color with each apparel
+    if not queries:
+        primary_color = groups['color'][0] if groups['color'] else ''
+        for apparel_item in groups['apparel'][:3]:
+            parts = [gender_token, primary_color, apparel_item]
+            query = ' '.join([p for p in parts if p]).strip()
+            if query and query not in queries:
+                queries.append(query)
     
     # If we have colors but no apparel items generated yet, add fallback
     if not queries and groups['color']:
