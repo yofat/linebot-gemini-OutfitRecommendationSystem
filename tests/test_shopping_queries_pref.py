@@ -1,4 +1,4 @@
-from shopping_queries import build_queries
+from shopping_queries import build_queries, APPAREL_KEYWORDS, FOOTWEAR_KEYWORDS
 
 
 def test_build_queries_with_gender_and_preferences():
@@ -12,6 +12,9 @@ def test_build_queries_with_gender_and_preferences():
     # ensure only apparel-related terms
     banned = ['バッグ', 'アクセ', 'ジュエリー', 'ネックレス']
     assert all(not any(b in q for b in banned) for q in queries)
+    apparel_keywords = {kw for kw in APPAREL_KEYWORDS | FOOTWEAR_KEYWORDS}
+    for q in queries:
+        assert any(kw in q for kw in apparel_keywords)
     # should return a list with at most 6 items
     assert isinstance(queries, list)
     assert 1 <= len(queries) <= 6

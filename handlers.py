@@ -1,9 +1,10 @@
 import os
 import time
 import json
+import re
 import hashlib
 import logging
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Tuple
 try:
     import redis
 except Exception:
@@ -232,6 +233,67 @@ _user_image_timestamps: Dict[str, float] = {}
 # short debounce for prompts to avoid duplicate replies (seconds)
 _recent_prompt_ts: Dict[str, float] = {}
 
+
+_GENDER_KEYWORDS = {
+    '男性': ['男性', '男', '男生', '先生', '紳士', 'men', 'man', 'male', 'boy', '男裝'],
+    '女性': ['女性', '女', '女生', '小姐', 'lady', 'woman', 'female', 'girl', '女裝'],
+    '不公開': ['不公開', '不限', '都可以', '皆可', '男女皆可', '男女皆宜', '通用', '任何', '任意', 'any', '無特別', '沒特別', '都行', '無偏好']
+}
+_PREFERENCE_SKIP_WORDS = {'無', '沒有', 'none', '無偏好', '不特別', '沒特別', '隨便', '都可以', '皆可', '不限', '沒有特別', 'nothing'}
+_PREFERENCE_SPLIT_RE = re.compile(r'[，,；;、/\s]+')
+
+
+def _normalize_gender_input(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    lowered = text.strip().lower()
+    if not lowered:
+        return None
+    for canonical, keywords in _GENDER_KEYWORDS.items():
+        for kw in keywords:
+            if not kw:
+                continue
+            if lowered == kw.lower() or kw.lower() in lowered:
+                return canonical
+    return None
+
+
+def _parse_preferences_input(text: Optional[str]) -> Tuple[List[str], bool]:
+    """Parse preference free-text; return (prefs, skip_flag)."""
+    if text is None:
+        return [], False
+    raw = text.strip()
+    if not raw:
+        return [], False
+    lowered = raw.lower()
+    if lowered in _PREFERENCE_SKIP_WORDS:
+        return [], True
+    parts = [p.strip() for p in _PREFERENCE_SPLIT_RE.split(raw) if p.strip()]
+    if not parts:
+        return [], False
+    prefs: List[str] = []
+    skip_flag = False
+    seen = set()
+    for part in parts:
+        low = part.lower()
+        if low in _PREFERENCE_SKIP_WORDS:
+            skip_flag = True
+            continue
+        if part not in seen:
+            prefs.append(part)
+            seen.add(part)
+    if prefs:
+        return prefs, skip_flag
+    return [], skip_flag
+
+
+def _default_suggestions(gender: Optional[str]) -> List[str]:
+    norm = _normalize_gender_input(gender)
+    if norm == '男性':
+        return ['メンズ シャツ スリムフィット', 'メンズ スラックス テーパード', 'メンズ レザー ローファー']
+    if norm == '女性':
+        return ['レディース ブラウス フェミニン', 'レディース ミディスカート', 'レディース パンプス ベーシック']
+    return ['ユニセックス トップス ベーシック', 'ユニセックス ワイドパンツ', 'ユニセックス スニーカー']
 
 
 def allow_user_image_infer(user_id: str, cooldown_sec: int = None) -> bool:
@@ -462,6 +524,40 @@ def register_handlers(line_bot_api: LineBotApi, handler):
                 pass
             line_bot_api.reply_message(event.reply_token, msg)
             return
+        if phase == 'Q4':
+            st = get_state(user_id) or {}
+            ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
+            gender = ctx.get('gender')
+            if not gender:
+                normalized = _normalize_gender_input(text)
+                if not normalized:
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請輸入男性、女性或不公開，或使用快速選項。'))
+                    return
+                ctx['gender'] = normalized
+                set_state(user_id, phase='Q4', stage='ASK_PREFERENCES', context=ctx)
+                qr = QuickReply(items=[
+                    QuickReplyButton(action=PostbackAction(label='合身', data='q4_pref=合身')),
+                    QuickReplyButton(action=PostbackAction(label='寬鬆', data='q4_pref=寬鬆')),
+                    QuickReplyButton(action=PostbackAction(label='蕾絲', data='q4_pref=蕾絲')),
+                    QuickReplyButton(action=PostbackAction(label='一件式洋裝', data='q4_pref=一件式洋裝')),
+                ])
+                msg = TextSendMessage(text='請輸入你偏好的款式或材質（可多個，用空白或逗號分隔），若沒有請輸入「無」。')
+                try:
+                    setattr(msg, 'quick_reply', qr)
+                except Exception:
+                    pass
+                line_bot_api.reply_message(event.reply_token, msg)
+                return
+            prefs, skipped = _parse_preferences_input(text)
+            if prefs:
+                ctx['preferences'] = prefs
+            elif skipped:
+                ctx['preferences'] = []
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text='請輸入偏好的款式或材質關鍵字（例如：合身、蕾絲），或輸入「無」。'))
+                return
+            set_state(user_id, phase='WAIT_IMAGE', stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
             return
         if phase == 'WAIT_IMAGE':
             # allow user to restart flow by sending 'restart'
@@ -571,18 +667,49 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='發生錯誤，請稍後再試或改用文字描述'))
             return
 
-        # preserve last analysis in state so user can request shopping recommendations
-        try:
-            # keep context and last_analysis for short-term retrieval
-            set_state(user_id, phase='DONE', last_analysis=parsed, context=st.get('context', {}), analysis_ts=int(time.time()))
-        except Exception:
-            # fallback to clearing if state store fails
-            clear_state(user_id)
-
         if not parsed or not isinstance(parsed, dict):
             # parsed should be a dict matching expected schema; if not, inform user and fallback to text guidance
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='分析結果為空或格式不正確，請改以文字描述（上衣/下著/鞋款與顏色、版型）我會用文字給分與建議。'))
             return
+
+        ctx = st.get('context', {}) or {}
+        if not isinstance(ctx, dict):
+            ctx = {}
+
+        model_gender = parsed.get('gender') if isinstance(parsed.get('gender'), str) else None
+        norm_gender = _normalize_gender_input(model_gender)
+        if norm_gender:
+            ctx['gender'] = norm_gender
+        else:
+            existing_gender = ctx.get('gender') if isinstance(ctx.get('gender'), str) else None
+            norm_existing = _normalize_gender_input(existing_gender)
+            if norm_existing:
+                ctx['gender'] = norm_existing
+                norm_gender = norm_existing
+
+        model_prefs = parsed.get('preferences')
+        parsed_prefs: List[str] = []
+        if isinstance(model_prefs, list):
+            parsed_prefs = [p.strip() for p in model_prefs if isinstance(p, str) and p.strip()]
+        elif isinstance(model_prefs, str):
+            parsed_prefs, _ = _parse_preferences_input(model_prefs)
+        if parsed_prefs:
+            ctx['preferences'] = parsed_prefs
+
+        suggestions_raw = parsed.get('suggestions')
+        if not isinstance(suggestions_raw, list):
+            suggestions_raw = []
+        suggestions = [s.strip() for s in suggestions_raw if isinstance(s, str) and s.strip()]
+        if not suggestions:
+            suggestions = _default_suggestions(ctx.get('gender'))
+        parsed['suggestions'] = suggestions
+        parsed['gender'] = ctx.get('gender', parsed.get('gender', ''))
+        parsed['preferences'] = ctx.get('preferences', parsed.get('preferences', []))
+
+        try:
+            set_state(user_id, phase='DONE', last_analysis=parsed, context=ctx, analysis_ts=int(time.time()))
+        except Exception:
+            clear_state(user_id)
 
         # expected schema fields
         subs = parsed.get('subscores', {})
@@ -679,7 +806,7 @@ def register_handlers(line_bot_api: LineBotApi, handler):
         ctx = st.get('context', {'scene': None, 'purpose': None, 'time_weather': None})
         if data.startswith('q1='):
             ctx['scene'] = data.split('=', 1)[1]
-            set_state(user_id, stage='ASK_CONTEXT', context=ctx)
+            set_state(user_id, phase='Q2', stage='ASK_CONTEXT', context=ctx)
             # ask q2
             qr = QuickReply(items=[
                 QuickReplyButton(action=PostbackAction(label='正式', data='q2=正式')),
@@ -695,7 +822,7 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             return
         if data.startswith('q2='):
             ctx['purpose'] = data.split('=', 1)[1]
-            set_state(user_id, stage='ASK_CONTEXT', context=ctx)
+            set_state(user_id, phase='Q3', stage='ASK_CONTEXT', context=ctx)
             qr = QuickReply(items=[
                 QuickReplyButton(action=PostbackAction(label='白天/晴', data='q3=白天/晴')),
                 QuickReplyButton(action=PostbackAction(label='傍晚/涼爽', data='q3=傍晚/涼爽')),
@@ -710,20 +837,31 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             return
         if data.startswith('q3='):
             ctx['time_weather'] = data.split('=', 1)[1]
-            set_state(user_id, stage='WAIT_IMAGE', context=ctx, expires_at=int(time.time()) + 3600)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'已完成設定，請上傳圖片（JPG/PNG，最大 {MAX_IMAGE_MB} MB）'))
+            set_state(user_id, phase='Q4', stage='ASK_PREFERENCES', context=ctx)
+            qr = QuickReply(items=[
+                QuickReplyButton(action=PostbackAction(label='男性', data='q4_gender=男性')),
+                QuickReplyButton(action=PostbackAction(label='女性', data='q4_gender=女性')),
+                QuickReplyButton(action=PostbackAction(label='不公開', data='q4_gender=不公開')),
+            ])
+            msg = TextSendMessage(text='請問你的性別或偏好族群（例如：男性/女性/不公開），或直接輸入；接著會詢問衣著偏好（例如：合身、蕾絲、一件式洋裝）')
+            try:
+                setattr(msg, 'quick_reply', qr)
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, msg)
             return
         if data.startswith('q4_gender='):
             # store gender and ask for preferences
-            ctx['gender'] = data.split('=', 1)[1]
-            set_state(user_id, stage='ASK_PREFERENCES', context=ctx)
+            raw_gender = data.split('=', 1)[1]
+            ctx['gender'] = _normalize_gender_input(raw_gender) or raw_gender
+            set_state(user_id, phase='Q4', stage='ASK_PREFERENCES', context=ctx)
             qr = QuickReply(items=[
                 QuickReplyButton(action=PostbackAction(label='合身', data='q4_pref=合身')),
                 QuickReplyButton(action=PostbackAction(label='寬鬆', data='q4_pref=寬鬆')),
                 QuickReplyButton(action=PostbackAction(label='蕾絲', data='q4_pref=蕾絲')),
                 QuickReplyButton(action=PostbackAction(label='一件式洋裝', data='q4_pref=一件式洋裝')),
             ])
-            msg = TextSendMessage(text='請輸入你偏好的款式或材質（可多個，用空白或逗號分隔），或選擇下列常見選項')
+            msg = TextSendMessage(text='請輸入你偏好的款式或材質（可多個，用空白或逗號分隔），若沒有請輸入「無」，或選擇下列常見選項')
             try:
                 setattr(msg, 'quick_reply', qr)
             except Exception:
