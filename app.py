@@ -38,7 +38,13 @@ def _load_secrets_from_files(keys, base_path='/etc/secrets'):
 
 # load commonly-used secrets from files if present
 _load_secrets_from_files([
-    'LINE_CHANNEL_ACCESS_TOKEN', 'LINE_CHANNEL_SECRET', 'GENAI_API_KEY', 'SENTRY_DSN', 'REDIS_URL'
+    'LINE_CHANNEL_ACCESS_TOKEN',
+    'LINE_CHANNEL_SECRET',
+    'GENAI_API_KEY',
+    'SENTRY_DSN',
+    'REDIS_URL',
+    'RAKUTEN_APP_ID',
+    'RAKUTEN_AFFILIATE_ID'
 ])
 
 LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
@@ -113,7 +119,15 @@ def _debug_handler_status():
 @app.route('/_debug/env_presence', methods=['GET'])
 def _debug_env_presence():
     # Check presence (not values) of important env vars used by the app
-    keys = ['LINE_CHANNEL_SECRET', 'LINE_CHANNEL_ACCESS_TOKEN', 'GENAI_API_KEY', 'SENTRY_DSN', 'REDIS_URL']
+    keys = [
+        'LINE_CHANNEL_SECRET',
+        'LINE_CHANNEL_ACCESS_TOKEN',
+        'GENAI_API_KEY',
+        'SENTRY_DSN',
+        'REDIS_URL',
+        'RAKUTEN_APP_ID',
+        'RAKUTEN_AFFILIATE_ID'
+    ]
     result = {k: (os.getenv(k) is not None) for k in keys}
     return result, 200
 
