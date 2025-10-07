@@ -970,23 +970,37 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             if isinstance(preferences, str):
                 preferences = [p.strip() for p in preferences.split(',') if p.strip()]
             
+            logger.info('Shopping request - suggestions: %s, scene: %s, purpose: %s', suggestions, scene, purpose)
+            
             # Translate Chinese suggestions to Japanese keywords for Rakuten API
             # Keep original Chinese suggestions for display, use Japanese for search
             try:
                 from gemini_client import translate_to_japanese_keywords
                 japanese_keywords = translate_to_japanese_keywords(suggestions)
-                logger.info('Using Japanese keywords for search: %s', japanese_keywords)
+                logger.info('Translated to Japanese keywords: %s', japanese_keywords)
             except Exception as e:
-                logger.warning('Failed to translate suggestions, using original: %s', e)
+                logger.exception('Failed to translate suggestions')
                 japanese_keywords = suggestions  # Fallback to original
             
             try:
                 # Use Japanese keywords for Rakuten search
                 queries = build_queries(japanese_keywords, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
+                logger.info('Built queries: %s', queries)
+                
                 products = search_products(queries, max_results=SHOP_MAX_RESULTS, gender=gender, preferences=preferences)
+                logger.info('Found %d products', len(products) if products else 0)
+                
                 if not products:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text='暫時找不到符合建議的單品，請改用品牌或顏色關鍵字再試。'))
                     return
+                
+                # Log first product for debugging
+                if products:
+                    logger.info('First product: title=%s, price=%s, url=%s', 
+                              products[0].get('title', 'N/A')[:50], 
+                              products[0].get('price_text', 'N/A'),
+                              products[0].get('url', 'N/A')[:80])
+                
                 carousel = format_for_flex(products, currency=SHOP_CURRENCY)
                 # prepend a disclaimer
                 disclaimer = TextSendMessage(text='連結資訊與價格可能有變動，請以目標頁面為準。')

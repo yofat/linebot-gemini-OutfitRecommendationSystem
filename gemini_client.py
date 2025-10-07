@@ -90,12 +90,15 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": number\n"
         "  },\n"
         "  \"summary\": string,\n"
-        "  \"suggestions\": [string, string, string],  // 每項必須是服飾或鞋類的中文描述(例如: 白色襯衫、深藍色西裝褲)\n"
+        "  \"suggestions\": [string, string, string],  // 每項必須是簡潔的服飾描述,格式: [顏色][材質/風格][服飾類型]\n"
         "  \"gender\": string,             // 可選: 男性/女性/不公開/空字串\n"
         "  \"preferences\": [string, ...]  // 可選: 偏好詞彙，如 [\"蕾絲\", \"合身\"]\n"
         "}\n"
-        "重要: suggestions 必須使用繁體中文,描述具體的服飾單品(例如: '白色合身襯衫'、'深藍色西裝褲'、'棕色皮革樂福鞋')。\n"
-        "僅能推薦服飾或鞋類單品,嚴禁輸出包包、配件、飾品或其他非穿著品。若性別無法判定,請提供男女皆宜的建議或同時標註對應版本。\n"
+        "重要規則:\n"
+        "1. suggestions 使用繁體中文,格式簡潔: [顏色] + [服飾類型] (例如: '白色襯衫'、'深藍色西裝褲'、'棕色皮鞋')\n"
+        "2. 避免過度描述,不要加入太多形容詞(例如: ❌'白色亞麻質地輕薄透氣長褲' → ✓'白色長褲')\n"
+        "3. 僅推薦服飾或鞋類,嚴禁推薦包包、配件、飾品\n"
+        "4. 每個建議應該是可以直接搜尋的商品關鍵字\n"
     )
 
     example = (
@@ -111,7 +114,7 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
         "    \"grooming\": 90\n"
         "  },\n"
         "  \"summary\": \"整體搭配良好，可再調整色彩平衡。\",\n"
-        "  \"suggestions\": [\"白色合身襯衫\", \"深藍色西裝褲\", \"棕色皮革樂福鞋\"],\n"
+        "  \"suggestions\": [\"白色襯衫\", \"深藍色西裝褲\", \"棕色皮鞋\"],\n"
         "  \"gender\": \"女性\",\n"
         "  \"preferences\": [\"蕾絲\", \"合身\"]\n"
         "}\n"
@@ -265,13 +268,20 @@ def translate_to_japanese_keywords(chinese_suggestions: list) -> list:
         # Build translation prompt
         items_text = '\n'.join([f'{i+1}. {s}' for i, s in enumerate(chinese_suggestions)])
         prompt = (
-            f"請將以下繁體中文服飾描述翻譯成適合日本樂天購物網站搜尋的日文關鍵字。\n"
-            f"要求:\n"
-            f"1. 使用片假名標註顏色(例如: 白色→ホワイト, 黑色→ブラック, 深藍色→ネイビー)\n"
-            f"2. 服飾類型使用常見日文(例如: 襯衫→シャツ, 西裝褲→スラックス, 樂福鞋→ローファー)\n"
-            f"3. 保持簡潔,適合搜尋引擎\n"
-            f"4. 只回傳翻譯結果,每行一項,不要編號\n\n"
-            f"中文描述:\n{items_text}\n\n"
+            f"將以下中文服飾翻譯成日文搜尋關鍵字(用於日本樂天購物網站):\n\n"
+            f"{items_text}\n\n"
+            f"翻譯規則:\n"
+            f"1. 顏色用片假名: 白色→ホワイト、黑色→ブラック、藍色→ブルー、深藍色→ネイビー、紅色→レッド、灰色→グレー、棕色→ブラウン\n"
+            f"2. 服飾類型:\n"
+            f"   - 襯衫→シャツ\n"
+            f"   - 西裝褲→スラックス\n"
+            f"   - 長褲→パンツ\n"
+            f"   - 皮鞋/樂福鞋→ローファー\n"
+            f"   - 涼鞋→サンダル\n"
+            f"   - T恤→Tシャツ\n"
+            f"   - 外套→ジャケット\n"
+            f"3. 保持簡潔,去除不必要的形容詞\n"
+            f"4. 每行一個翻譯,不要編號,不要其他文字\n\n"
             f"日文關鍵字:"
         )
         
