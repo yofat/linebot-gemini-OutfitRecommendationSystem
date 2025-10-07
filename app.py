@@ -270,18 +270,38 @@ def debug_shop_test():
 
     if request.method == 'GET':
         html = '''
-        <html><body>
-        <h3>Shop Test (no Gemini)</h3>
+        <html><head><style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        textarea { font-family: monospace; }
+        .example { background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        input[type=submit] { background: #4CAF50; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+        </style></head><body>
+        <h2>🛍️ Rakuten Shopping Test Page</h2>
+        <div class="example">
+        <strong>💡 提示:</strong> 
+        <ul>
+        <li>Suggestions 應該是<strong>日文</strong>格式 (例: ホワイト シャツ)</li>
+        <li>每行一個服飾項目</li>
+        <li>格式: [顏色] [服飾類型] (例: ベージュ ワンピース)</li>
+        </ul>
+        </div>
         <form method="post">
-        Suggestions (one per line):<br>
-        <textarea name="suggestions" rows="6" cols="60">白色 素T\n牛仔褲 直筒\n皮革 樂福鞋</textarea><br>
-        Scene: <input name="scene" value="上班"><br>
-        Purpose: <input name="purpose" value="正式"><br>
-        Time/Weather: <input name="time_weather" value="白天"><br>
-        Gender: <input name="gender" value="女性"><br>
-        Preferences (space/comma separated): <input name="preferences" value="蕾絲 合身"><br>
-        Max Results: <input name="max_results" value="8"><br>
-        <input type="submit" value="Search">
+        <strong>Suggestions (一行一個,日文格式):</strong><br>
+        <textarea name="suggestions" rows="6" cols="60">カーディガン
+ベージュ ワンピース
+ブラウン スニーカー</textarea><br>
+        <small>範例: ホワイト シャツ / ネイビー パンツ / ブラック ローファー</small><br><br>
+        Gender: <input name="gender" value="レディース" size="15">
+        <small>(レディース / メンズ)</small><br>
+        Max Results: <input name="max_results" value="8" size="5"><br>
+        <br>
+        <strong>選填 (可留空):</strong><br>
+        Scene: <input name="scene" value="" size="20"><br>
+        Purpose: <input name="purpose" value="" size="20"><br>
+        Time/Weather: <input name="time_weather" value="" size="20"><br>
+        Preferences: <input name="preferences" value="" size="30"><br>
+        <br>
+        <input type="submit" value="🔍 Search" style="background: #4CAF50; color: white; padding: 10px 20px; border: none; cursor: pointer; font-size: 16px;">
         </form>
         </body></html>
         '''
