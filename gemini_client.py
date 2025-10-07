@@ -85,15 +85,35 @@ def _get_timeout() -> float:
         return 15.0
 
 
+_GENAI_CONFIGURED = False
+
+
 def _ensure_configured():
     """Configure genai SDK lazily if possible."""
+    global _GENAI_CONFIGURED
+    if _GENAI_CONFIGURED:
+        return
+
     key = _get_api_key()
     if key and genai and hasattr(genai, 'configure'):
+        api_version = os.getenv('GENAI_API_VERSION', 'v1')
+        client_options = {'api_version': api_version}
         try:
-            genai.configure(api_key=key)
+            genai.configure(api_key=key, client_options=client_options)
+            _GENAI_CONFIGURED = True
+            return
+        except TypeError:
+            # Older SDKs (<0.6) do not accept client_options; retry without it.
+            try:
+                genai.configure(api_key=key)
+                _GENAI_CONFIGURED = True
+                return
+            except Exception:
+                logger.debug('genai.configure fallback without client_options failed', exc_info=True)
         except Exception:
-            # best-effort configuration
             logger.debug('genai.configure failed', exc_info=True)
+
+    # Do not flip the flag if configuration was not successful
 
 
 class GeminiError(Exception):
