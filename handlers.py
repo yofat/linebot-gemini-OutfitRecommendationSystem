@@ -191,6 +191,37 @@ if os.getenv('REDIS_URL') and redis:
     except Exception:
         _redis_client = None
 
+# simple per-user recent message dedupe (memory fallback; optional Redis-backed)
+_recent_user_msg: Dict[str, float] = {}
+_RECENT_MSG_TTL = float(os.getenv('USER_MSG_DEDUPE_SEC', '2'))
+
+
+def _is_recent_same_message(uid: str, msg_hash: str, ttl: float = None) -> bool:
+    """Return True if the same message hash from the same user was seen within ttl seconds.
+
+    Uses Redis if available (SET NX with expire), otherwise an in-memory dict.
+    """
+    if ttl is None:
+        ttl = _RECENT_MSG_TTL
+    now = time.time()
+    if _redis_client:
+        try:
+            key = f'lastmsg:{uid}:{msg_hash}'
+            added = _redis_client.set(key, '1', nx=True, ex=int(max(1, ttl)))
+            return not bool(added)
+        except Exception:
+            # fall back to memory
+            pass
+    # cleanup expired entries
+    for k, ts in list(_recent_user_msg.items()):
+        if now - ts > ttl:
+            _recent_user_msg.pop(k, None)
+    key = f'{uid}:{msg_hash}'
+    if key in _recent_user_msg:
+        return True
+    _recent_user_msg[key] = now
+    return False
+
 
 def _is_duplicate(event_id: str) -> bool:
     """Return True if event_id already seen within TTL."""
