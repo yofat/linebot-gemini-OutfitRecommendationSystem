@@ -100,7 +100,8 @@ def _ensure_configured():
 
     key = _get_api_key()
     if key and genai and hasattr(genai, 'configure'):
-        api_version = os.getenv('GENAI_API_VERSION', 'v1')
+        # Use v1beta for Gemini 2.x models (required for multimodal/image features)
+        api_version = os.getenv('GENAI_API_VERSION', 'v1beta')
         client_options = {'api_version': api_version}
         # Ensure the broader GOOGLE_API_KEY env var exists before any
         # downstream google clients attempt to read ADC/default credentials.
@@ -528,15 +529,15 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             if env_candidates:
                 model_names = [m.strip() for m in env_candidates.split(',') if m.strip()]
             else:
-                # defaults tuned for the free tier (updated 2025-10). Prefer the
-                # latest Gemini 2.5 Flash family, then fall back to 2.0 and legacy
-                # 1.5 variants in case a project still has access to them.
+                # Free tier models with multimodal (image+text) support.
+                # Gemini 2.x models are available on free tier with v1beta API.
+                # Prefer 2.0 Flash (higher rate limits) over 2.5 Flash.
                 model_names = [
-                    'gemini-2.5-flash',
-                    'gemini-2.5-flash-preview',
-                    'gemini-2.5-flash-lite',
+                    'gemini-2.0-flash-exp',
                     'gemini-2.0-flash',
-                    'gemini-2.0-flash-lite',
+                    'gemini-1.5-flash',
+                    'gemini-1.5-flash-latest',
+                    'gemini-1.5-pro-latest',
                 ]
 
             last_exc = None
