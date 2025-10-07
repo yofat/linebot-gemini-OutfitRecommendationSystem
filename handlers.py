@@ -970,18 +970,44 @@ def register_handlers(line_bot_api: LineBotApi, handler):
             logger.info('Shopping request - suggestions: %s, scene: %s, purpose: %s', suggestions, scene, purpose)
             
             # Translate Chinese suggestions to Japanese keywords for Rakuten API
-            # Keep original Chinese suggestions for display, use Japanese for search
+            # Also translate scene/purpose/time_weather context to Japanese
             try:
                 from gemini_client import translate_to_japanese_keywords
                 japanese_keywords = translate_to_japanese_keywords(suggestions)
-                logger.info('Translated to Japanese keywords: %s', japanese_keywords)
+                logger.info('Translated suggestions: %s -> %s', suggestions, japanese_keywords)
+                
+                # Translate context fields to Japanese
+                context_to_translate = []
+                if scene:
+                    context_to_translate.append(scene)
+                if purpose:
+                    context_to_translate.append(purpose)
+                if time_weather:
+                    context_to_translate.append(time_weather)
+                
+                japanese_context = []
+                if context_to_translate:
+                    japanese_context = translate_to_japanese_keywords(context_to_translate)
+                    logger.info('Translated context: %s -> %s', context_to_translate, japanese_context)
+                
+                # Map translated context back
+                jp_scene = japanese_context[0] if len(japanese_context) > 0 and scene else ''
+                jp_purpose = japanese_context[1] if len(japanese_context) > 1 and purpose else ''
+                jp_time_weather = japanese_context[2] if len(japanese_context) > 2 and time_weather else ''
+                
+                logger.info('Using Japanese for search - keywords: %s, scene: %s, purpose: %s, time_weather: %s',
+                           japanese_keywords, jp_scene, jp_purpose, jp_time_weather)
             except Exception as e:
-                logger.exception('Failed to translate suggestions')
+                logger.exception('Failed to translate suggestions or context')
                 japanese_keywords = suggestions  # Fallback to original
+                jp_scene = scene
+                jp_purpose = purpose
+                jp_time_weather = time_weather
             
             try:
-                # Use Japanese keywords for Rakuten search
-                queries = build_queries(japanese_keywords, scene, purpose, time_weather=time_weather, gender=gender, preferences=preferences)
+                # Use Japanese keywords and context for Rakuten search
+                queries = build_queries(japanese_keywords, jp_scene, jp_purpose, 
+                                      time_weather=jp_time_weather, gender=gender, preferences=preferences)
                 logger.info('Built queries: %s', queries)
                 
                 products = search_products(queries, max_results=SHOP_MAX_RESULTS, gender=gender, preferences=preferences)
