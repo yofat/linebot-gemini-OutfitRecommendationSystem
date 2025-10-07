@@ -488,15 +488,15 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             if env_candidates:
                 model_names = [m.strip() for m in env_candidates.split(',') if m.strip()]
             else:
-                # reasonable defaults based on official stable models (2025):
-                # prefer Gemini 2.5 family then fall back to older 1.x names
+                # defaults tuned for the free tier (updated 2025-10). Prefer the
+                # latest Gemini 2.5 Flash family, then fall back to 2.0 and legacy
+                # 1.5 variants in case a project still has access to them.
                 model_names = [
                     'gemini-2.5-flash',
-                    'gemini-2.5-pro',
+                    'gemini-2.5-flash-preview',
                     'gemini-2.5-flash-lite',
-                    'gemini-2.0-flash-001',
-                    'gemini-1.5-flash',
-                    'gemini-1.5',
+                    'gemini-2.0-flash',
+                    'gemini-2.0-flash-lite',
                 ]
 
             last_exc = None
@@ -565,8 +565,11 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                     except Exception as e:
                         # Some SDKs raise descriptive API errors (e.g. Unknown field for Part)
                         msg = str(e)
+                        msg_lower = msg.lower()
                         # If the model itself is not found or not accessible, try next
-                        if 'was not found' in msg or 'not found or your project does not have access' in msg or 'Publisher Model' in msg:
+                        if ('was not found' in msg_lower or 'is not found' in msg_lower
+                                or 'not found or your project does not have access' in msg_lower
+                                or 'publisher model' in msg_lower):
                             logger.warning('Model %s not available: %s', model_name, msg)
                             last_exc = e
                             # break out of candidate loop and try next model_name
@@ -574,12 +577,14 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                         # If the SDK reports that the provided dict has unexpected keys
                         # (e.g. "provided dictionary has the following keys: ['type','text']"),
                         # treat it as a schema mismatch and try the next candidate.
-                        if 'provided dictionary has the following keys' in msg or 'provided dictionary has the following keys:' in msg or 'following keys' in msg:
+                        if ('provided dictionary has the following keys' in msg_lower
+                                or 'provided dictionary has the following keys:' in msg_lower
+                                or 'following keys' in msg_lower):
                             last_exc = e
                             continue
                         # If the SDK reports an invalid role, attempt to sanitize
                         # any 'role' keys in dict/list candidates and retry once.
-                        if 'Please use a valid role' in msg or 'valid role' in msg:
+                        if 'please use a valid role' in msg_lower or 'valid role' in msg_lower:
                             try:
                                 def _sanitize_roles(o):
                                     # recursively copy and sanitize any 'role' values
@@ -614,7 +619,8 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                             except Exception:
                                 # fallback to normal handling below
                                 pass
-                        if 'Unknown field for Part' in msg or 'Unknown field' in msg or 'Invalid Part' in msg:
+                        if ('unknown field for part' in msg_lower or 'unknown field' in msg_lower
+                                or 'invalid part' in msg_lower):
                             # if unknown field, try sanitized candidate next
                             last_exc = e
                             continue
@@ -633,17 +639,19 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
                 # the bot responsive and allows the UI to guide the user to
                 # a text-based fallback.
                 msg = str(last_exc)
+                msg_lower = msg.lower()
                 logger.warning('All parts candidates failed: %s', msg)
                 # If none of the configured models are available (404 / NotFound
                 # errors), return a helpful fallback instructing operator action
                 # instead of raising an internal error.
-                if ('was not found' in msg or 'not found or your project does not have access' in msg
-                        or 'Publisher Model' in msg):
+                if ('was not found' in msg_lower or 'is not found' in msg_lower
+                        or 'not found or your project does not have access' in msg_lower
+                        or 'publisher model' in msg_lower):
                     return _fallback_outfit_json(
                         'No available Gemini model in this deployment. '
                         'Please set GEMINI_MODEL_CANDIDATES to a model your project can access, '
                         'or set DISABLE_IMAGE_ANALYZE=1 to skip image analysis.')
-                if 'Unknown field' in msg or 'Unknown field for Part' in msg:
+                if 'unknown field' in msg_lower or 'unknown field for part' in msg_lower:
                     # return a friendly fallback JSON explaining the reason
                     return _fallback_outfit_json(f'Image analysis not supported in this deployment: {msg}')
                 # otherwise re-raise the last exception
@@ -798,17 +806,20 @@ def probe_model_availability(model_name: str, timeout: float = 5.0) -> tuple:
         return True, 'ok'
     except Exception as e:
         msg = str(e)
+        msg_lower = msg.lower()
         # handle quota 429 messages by extracting retry_delay and setting cooldown
-        if 'quota' in msg.lower() or 'exceeded' in msg.lower() or '429' in msg:
+        if 'quota' in msg_lower or 'exceeded' in msg_lower or '429' in msg:
             retry_secs = _extract_retry_seconds_from_msg(msg) or 30.0
             try:
                 _set_model_cooldown(model_name, retry_secs)
             except Exception:
                 pass
             return False, f'quota_exceeded, retry after {retry_secs}s: {msg}'
-        if 'was not found' in msg or 'not found or your project does not have access' in msg or 'Publisher Model' in msg:
+        if ('was not found' in msg_lower or 'is not found' in msg_lower
+                or 'not found or your project does not have access' in msg_lower
+                or 'publisher model' in msg_lower):
             return False, 'model not found or not accessible: ' + msg
-        if 'Permission' in msg or 'permission' in msg or 'permissionDenied' in msg:
+        if 'permission' in msg_lower or 'permissiondenied' in msg_lower:
             return False, 'permission denied: ' + msg
         # other errors
         return False, msg
