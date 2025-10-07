@@ -282,54 +282,35 @@ def build_queries(suggestions: List[str], scene: str, purpose: str, time_weather
 
     # new signature supports gender and preferences via kwargs in a backward-compatible way
     queries = []
-    # primary query: join all
-    main = ' '.join(jp_tokens).strip()
-    if main:
-        queries.append(main)
+    
+    # Strategy: Create focused queries for each apparel item with gender + primary color
+    # This works better than one big query with everything
+    gender_token = groups['gender'][0] if groups['gender'] else ''
+    primary_color = groups['color'][0] if groups['color'] else ''
+    
+    # Generate one query per apparel item (most specific)
+    for apparel_item in groups['apparel'][:3]:  # Max 3 apparel items
+        parts = [gender_token, primary_color, apparel_item]
+        query = ' '.join([p for p in parts if p]).strip()
+        if query and query not in queries:
+            queries.append(query)
+    
+    # If we have colors but no apparel items generated yet, add fallback
+    if not queries and groups['color']:
+        for color in groups['color'][:2]:
+            parts = [gender_token, color, 'トップス']
+            query = ' '.join([p for p in parts if p]).strip()
+            if query and query not in queries:
+                queries.append(query)
+    
+    # Absolute fallback
+    if not queries:
+        fallback = ' '.join([gender_token, 'トップス']).strip() or 'トップス'
+        queries.append(fallback)
 
-    # try smaller combinations
-    for i in range(len(jp_tokens)):
-        for j in range(i, min(len(jp_tokens), i + 3)):
-            q = ' '.join(jp_tokens[i : j + 1])
-            if q and q not in queries:
-                queries.append(q)
-            if len(queries) >= 6:
-                break
-        if len(queries) >= 6:
-            break
-
-    # add メンズ / レディース variants for item-like tokens depending on gender preference
-    men_added = []
-    for q in list(queries):
-        if any(x in q for x in ['シャツ', 'Tシャツ', 'パンツ', 'ジャケット', 'ワンピース', 'スカート', 'ジーンズ']):
-            # add generic メンズ
-            mq = f"メンズ {q}"
-            if mq not in queries and len(queries) < 6:
-                men_added.append(mq)
-            # add レディース
-            lq = f"レディース {q}"
-            if lq not in queries and len(queries) + len(men_added) < 6:
-                men_added.append(lq)
-
-    queries.extend(men_added)
-
-    # keep only apparel-focused queries; if none remain, synthesize fallback combos
-    apparel_queries = [q for q in queries if _query_has_apparel(q)]
-    if apparel_queries:
-        queries = apparel_queries
-    else:
-        fallback_queries = []
-        primary_color = groups['color'][0] if groups['color'] else ''
-        primary_style = groups['style'][0] if groups['style'] else ''
-        primary_gender = groups['gender'][0] if groups['gender'] else ''
-        base_parts = [tok for tok in (primary_gender, primary_color, primary_style) if tok]
-        apparel_tokens = groups['apparel'] or ['トップス']
-        for apparel_tok in apparel_tokens[:3]:
-            parts = base_parts + [apparel_tok]
-            q = ' '.join(parts).strip()
-            if q and q not in fallback_queries:
-                fallback_queries.append(q)
-        queries = fallback_queries or ['トップス']
+    # Old complex logic removed - simpler focused queries work better
+    # Keep only first 5 queries to avoid rate limits
+    queries = queries[:5]
 
     # sanitize: length cap and dedupe
     out = []
