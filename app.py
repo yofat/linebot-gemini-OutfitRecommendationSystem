@@ -52,8 +52,15 @@ _load_secrets_from_files([
 # before our lazy configure runs. This is best-effort and won't expose
 # secrets in logs.
 try:
-    from gemini_client import _ensure_configured
-    _ensure_configured()
+    import sys
+    # Avoid performing early configure during pytest runs (tests expect to
+    # control env variables themselves). If not running under pytest, do a
+    # best-effort early configure to reduce auth races in production.
+    if 'pytest' not in sys.modules:
+        from gemini_client import _ensure_configured
+        _ensure_configured()
+    else:
+        logging.getLogger(__name__).debug('Skipping early genai configure under pytest')
 except Exception:
     # Don't fail startup for diagnostics; errors will be visible in logs
     logging.getLogger(__name__).debug('early genai configure failed', exc_info=True)
