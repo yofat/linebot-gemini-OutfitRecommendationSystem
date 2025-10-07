@@ -102,28 +102,30 @@ def _ensure_configured():
     if key and genai and hasattr(genai, 'configure'):
         api_version = os.getenv('GENAI_API_VERSION', 'v1')
         client_options = {'api_version': api_version}
+        # Ensure the broader GOOGLE_API_KEY env var exists before any
+        # downstream google clients attempt to read ADC/default credentials.
+        # Setting it early helps avoid DefaultCredentialsError in some SDK
+        # versions which call google.auth.default() during client init.
+        if not os.getenv('GOOGLE_API_KEY'):
+            try:
+                os.environ['GOOGLE_API_KEY'] = key
+            except Exception:
+                # non-fatal if we can't set env var
+                pass
         try:
             genai.configure(api_key=key, client_options=client_options)
-            # Also set GOOGLE_API_KEY env var when not present so downstream
-            # google client code that calls google.auth.default() can pick up
-            # the key in some environments.
-            if not os.getenv('GOOGLE_API_KEY'):
-                try:
-                    os.environ['GOOGLE_API_KEY'] = key
-                except Exception:
-                    # non-fatal if we can't set env var
-                    pass
             _GENAI_CONFIGURED = True
             return
         except TypeError:
             # Older SDKs (<0.6) do not accept client_options; retry without it.
             try:
-                genai.configure(api_key=key)
+                # ensure env var before fallback configure as well
                 if not os.getenv('GOOGLE_API_KEY'):
                     try:
                         os.environ['GOOGLE_API_KEY'] = key
                     except Exception:
                         pass
+                genai.configure(api_key=key)
                 _GENAI_CONFIGURED = True
                 return
             except Exception:
