@@ -549,9 +549,11 @@ def analyze_outfit_image(scene: str, purpose: str, time_weather: str,
             # Try each model name in turn; if a model is not available (NotFound),
             # try the next. For each model, try the candidate list until one works.
             for model_name in model_names:
+                logger.info('Attempting to use Gemini model: %s', model_name)
                 try:
                     model = _create_generative_model(model_name)
-                except Exception:
+                except Exception as e:
+                    logger.warning('Failed to create model %s: %s', model_name, e)
                     model = None
                 if model is None:
                     logger.debug('GenerativeModel not constructible for model name: %s', model_name)
